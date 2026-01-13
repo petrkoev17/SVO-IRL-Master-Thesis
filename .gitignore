@@ -1,0 +1,34 @@
+# --- Python & Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- IDE Settings ---
+.idea/
+.vscode/
+*.swp
+
+# --- Data & Models (IMPORTANT) ---
+# We don't want to commit GBs of training data or zip files
+data/
+models/
+*.zip
+*.pkl
+
+# --- Logging & artifacts ---
+runs/
+wandb/
+*.log
+tqdm_runs/
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Thesis Specific ---
+# If you have a drafts folder for writing
+drafts/

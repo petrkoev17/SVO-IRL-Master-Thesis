@@ -1,0 +1,15 @@
+# Core RL & Physics
+numpy>=1.21.0
+torch>=2.0.0
+gymnasium>=0.28.1
+highway-env>=1.8.2
+
+# Algorithms
+stable-baselines3>=2.2.1
+
+# Logging & Visualization
+wandb>=0.16.0
+tensorboard>=2.15.0
+tqdm
+rich
+pygame
