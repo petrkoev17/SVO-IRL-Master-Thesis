@@ -1,6 +1,5 @@
 import gymnasium as gym
 import numpy as np
-from highway_env.envs import HighwayEnv
 
 class SVOWrapper(gym.Wrapper):
     """
@@ -15,39 +14,44 @@ class SVOWrapper(gym.Wrapper):
         self.svo_alpha = svo_alpha
         self.lamb = lamb
 
-        # Load configuration
-        config = getattr(self.env.unwrapped, "config", {})
+        # Precompute angles to optimize
+        self.cos_alpha = np.cos(svo_alpha)
+        self.sin_alpha = np.sin(svo_alpha)
+        self.svo_angle_deg = np.rad2deg(svo_alpha)
 
-        # Thesis Eq (3) Weights:
-        self.w_c = config.get("collision_reward", -5.0)
-        self.w_rl = config.get("right_lane_reward", 0.1)
-        self.w_e = config.get("high_speed_reward", 0.4)
+        # Cache config and weights
+        config = self.env.unwrapped.config
 
-        # On/Off road weights
-        self.r_on_road = config.get("on_road_reward", 1.5)
-        self.r_off_road = config.get("off_road_penalty", -10.0)
+        self.w_c = config["collision_reward"]
+        self.w_rl = config["right_lane_reward"]
+        self.w_e = config["high_speed_reward"]
+        self.r_on_road = config["on_road_reward"]
+        self.r_off_road = config["off_road_penalty"]
 
         # Speed reward range
-        self.speed_range = config.get("reward_speed_range", [20.0, 30.0])
-        self.v_min = self.speed_range[0]
-        self.v_max = self.speed_range[1]
+        v_min, v_max = config["reward_speed_range"]
+        self.v_min = v_min
+        self.v_range_inv = 1.0 / (v_max - v_min) if v_max > v_min else 0.0
 
         # Neighbour count
         observation_config = config.get("observation", {})
         self.neighbour_count = observation_config.get("vehicles_count", 10)
 
+        # Cache for logging
+        self._last_r_self = 0.0
+        self._last_r_global = 0.0
+
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
+
         svo_reward = self._calculate_svo_reward()
         final_reward = self.lamb * svo_reward
 
         # Log
         info['rewards/svo_total'] = final_reward
-        info['rewards/svo_angle_deg'] = np.rad2deg(self.svo_alpha)
-
-        if hasattr(self, '_last_r_self'):
-            info['rewards/component_self'] = self._last_r_self
-            info['rewards/component_global'] = self._last_r_global
+        info['rewards/svo_angle_deg'] = self.svo_angle_deg
+        info['rewards/component_self'] = self._last_r_self
+        info['rewards/component_global'] = self._last_r_global
 
         return obs, final_reward, terminated, truncated, info
 
@@ -57,20 +61,24 @@ class SVOWrapper(gym.Wrapper):
         :return: R_svo = cos(alpha) * R_self + sin(alpha) * R_global
         """
 
-        env = self.unwrapped
-        vehicle = env.vehicle
+        vehicle = self.env.unwrapped.vehicle
 
         # Calculate R_self
         r_self = self._calculate_single_vehicle_reward(vehicle)
         self._last_r_self = r_self
 
+        # Egoistic optimization
+        if abs(self.sin_alpha) < 1e-6:
+            self._last_r_global = 0.0
+            return self.cos_alpha * r_self
+
         # Calculate R_global
-        r_global = self._calculate_neighbourhood_reward(env)
+        r_global = self._calculate_neighbourhood_reward()
         self._last_r_global = r_global
 
         # Calculate SVO reward. Note! numpy trig functions expect radians
         #
-        r_svo = np.cos(self.svo_alpha) * r_self + np.sin(self.svo_alpha) * r_global
+        r_svo = self.cos_alpha * r_self + self.sin_alpha * r_global
 
         return r_svo
 
@@ -83,41 +91,36 @@ class SVOWrapper(gym.Wrapper):
         """
 
         # Collision reward
-        r_c = 1.0 if vehicle.crashed else 0.0
-        term_collision = self.w_c * r_c
+        term_collision = self.w_c if vehicle.crashed else 0.0
 
         # Right lane reward
         lanes = vehicle.road.network.all_side_lanes(vehicle.lane_index)
         num_lanes = len(lanes)
         if num_lanes > 1:
-            r_rl = vehicle.lane_index[2] / (num_lanes - 1)
+            lane_position = vehicle.lane_index[2]
+            term_right_lane = self.w_rl * (lane_position / (num_lanes - 1))
         else:
-            r_rl = 0.0
-
-        term_right_lane = self.w_rl * r_rl
+            term_right_lane = 0.0
 
         # High speed reward
-        scaled_speed = (vehicle.speed - self.v_min) / (self.v_max - self.v_min)
-        r_e = np.clip(scaled_speed, 0.0, 1.0)
+        scaled_speed = (vehicle.speed - self.v_min) * self.v_range_inv
+        r_e = max(0.0, min(1.0, scaled_speed))
         term_high_speed = self.w_e * r_e
 
         # On/Off road reward
-        if vehicle.on_road:
-            term_on_road = self.r_on_road
-        else:
-            term_on_road = self.r_off_road
+        term_on_road = self.r_on_road if vehicle.on_road else self.r_off_road
 
 
         # Total reward
-        total_reward = term_on_road + term_collision + term_right_lane + term_high_speed
-        return total_reward
+        return term_on_road * (term_collision + term_right_lane + term_high_speed)
 
-    def _calculate_neighbourhood_reward(self, env):
+    def _calculate_neighbourhood_reward(self):
         """
         Calculate R_global as the average R_self of neighbouring vehicles.
-        :param env: Environment
         :return: R_global
         """
+
+        env = self.env.unwrapped
 
         # Get neighbouring vehicles
         neighbours = env.road.close_vehicles_to(
@@ -132,8 +135,8 @@ class SVOWrapper(gym.Wrapper):
         if not neighbours:
             return 0.0
 
-        total_utility = 0.0
-        for v in neighbours:
-            total_utility += self._calculate_single_vehicle_reward(v)
+        total_utility = sum(
+            self._calculate_single_vehicle_reward(v) for v in neighbours
+        )
 
         return total_utility / len(neighbours)

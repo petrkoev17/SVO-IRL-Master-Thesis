@@ -4,6 +4,7 @@ import numpy as np
 import gymnasium as gym
 import wandb
 import torch
+from highway_env.envs import HighwayEnv
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
@@ -57,7 +58,7 @@ def train(args):
     )
 
     # Create vectorized environment
-    num_cpu = 6
+    num_cpu = 8
     env = SubprocVecEnv([
         make_env(i, svo_alpha_rad, args.seed) for i in range(num_cpu)
     ])
@@ -73,7 +74,7 @@ def train(args):
         env=env,
         learning_rate=3e-4,
         n_steps=2048,
-        batch_size=64,
+        batch_size=256,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,

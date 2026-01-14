@@ -31,13 +31,13 @@ ENV_CONFIG = {
 
     # Traffic
     "lanes_count": 4,
-    "vehicles_count": 50,
+    "vehicles_count": 25,
     "duration": 40,
     "initial_spacing": 2.0,
     "controlled_vehicles": 1,
 
     # Physics
-    "simulation_frequency": 15,
+    "simulation_frequency": 10,
     "policy_frequency": 5,
     "screen_width": 600,
     "screen_height": 150,
@@ -48,10 +48,11 @@ ENV_CONFIG = {
     "offscreen_rendering": False,
 
     # SVO Reward Weights
-    "collision_reward": -5.0,
-    "high_speed_reward": 0.4,
+    "collision_reward": -1.0,
+    "high_speed_reward": 1.0,
     "reward_speed_range": [20.0, 30.0],
-    "right_lane_reward": 0.1,
+    "right_lane_reward": 0.5,
     "on_road_reward": 1.5,
-    "off_road_penalty": 0.0,
+    "off_road_penalty": 0,
+
 }
