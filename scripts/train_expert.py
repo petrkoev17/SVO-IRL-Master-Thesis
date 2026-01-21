@@ -6,13 +6,14 @@ import wandb
 import torch
 from highway_env.envs import HighwayEnv
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from wandb.integration.sb3 import WandbCallback
 
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_wrapper import SVOWrapper
+from src.envs.svo_pure_wrapper import SVOPureWrapper
 
 def make_env(rank: int, svo_alpha: float, seed: int = 42):
     """
@@ -26,7 +27,7 @@ def make_env(rank: int, svo_alpha: float, seed: int = 42):
     def _init():
         env = gym.make(ENV_CONFIG["id"], render_mode=None)
         env.unwrapped.configure(ENV_CONFIG)
-        env = SVOWrapper(env, svo_alpha=svo_alpha)
+        env = SVOPureWrapper(env, svo_alpha=svo_alpha)
         env.reset(seed=seed + rank)
         return env
 
@@ -58,7 +59,7 @@ def train(args):
     )
 
     # Create vectorized environment
-    num_cpu = 8
+    num_cpu = 12
     env = SubprocVecEnv([
         make_env(i, svo_alpha_rad, args.seed) for i in range(num_cpu)
     ])
@@ -69,22 +70,57 @@ def train(args):
     os.makedirs(save_path, exist_ok=True)
 
     # Initialize PPO Agent
-    model = PPO(
-        policy="MlpPolicy",
-        env=env,
-        learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=256,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01,
-        verbose=1,
-        tensorboard_log=f"runs/{run_name}",
-        seed=args.seed,
-        device="auto",
-    )
+    # model = PPO(
+    #     policy="MlpPolicy",
+    #     env=env,
+    #     learning_rate=3e-4,
+    #     n_steps=2048,
+    #     batch_size=256,
+    #     n_epochs=10,
+    #     gamma=0.99,
+    #     gae_lambda=0.95,
+    #     clip_range=0.2,
+    #     ent_coef=0.01,
+    #     verbose=1,
+    #     tensorboard_log=f"runs/{run_name}",
+    #     seed=args.seed,
+    #     device="cpu",
+    # )
+
+    # Initialize DQN agent
+    # model = DQN(
+    #     policy="MlpPolicy",
+    #     env=env,
+    #     policy_kwargs=dict(net_arch=[128, 128]),
+    #     learning_rate=1e-3,
+    #     buffer_size=50000,
+    #     learning_starts=1000,
+    #     batch_size=32,
+    #     gamma=0.9,
+    #     train_freq=4,
+    #     gradient_steps=1,
+    #     exploration_fraction=0.3,
+    #     exploration_final_eps=0.1,
+    #     target_update_interval=1000,
+    #     verbose=1,
+    #     tensorboard_log="highway_dqn/",
+    #     device="auto"
+    # )
+
+    model = DQN('MlpPolicy', env,
+                policy_kwargs=dict(net_arch=[256, 256]),
+                learning_rate=5e-4,
+                buffer_size=15000,
+                learning_starts=200,
+                batch_size=32,
+                gamma=0.8,
+                train_freq=1,
+                gradient_steps=1,
+                target_update_interval=50,
+                verbose=1,
+                tensorboard_log="highway_dqn/")
+
+
 
     # Callbacks
     checkpoint_callback = CheckpointCallback(

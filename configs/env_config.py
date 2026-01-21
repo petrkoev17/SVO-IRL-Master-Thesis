@@ -10,7 +10,7 @@ ENV_CONFIG = {
     "observation": {
         "type": "Kinematics",
         "vehicles_count": 10,
-        "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+        "features": ["x", "y", "vx", "vy"],
         "features_range": {
             "x": [-100, 100],
             "y": [-100, 100],
@@ -21,24 +21,32 @@ ENV_CONFIG = {
         "order": "sorted",
     },
 
+    # Discrete actions
     "action": {
-        "type": "ContinuousAction",
+        "type": "DiscreteMetaAction",
         "longitudinal": True,
         "lateral": True,
-        "acceleration_range": [-5.0, 5.0],
-        "steering_range": [-np.pi/4, np.pi/4],
     },
+
+    # Continuous actions
+    # "action": {
+    #     "type": "ContinuousAction",
+    #     "longitudinal": True,
+    #     "lateral": True,
+    #     "acceleration_range": [-5.0, 5.0],
+    #     "steering_range": [-np.pi/4, np.pi/4],
+    # },
 
     # Traffic
     "lanes_count": 4,
-    "vehicles_count": 25,
-    "duration": 40,
+    "vehicles_count": 20,
+    "duration": 30,
     "initial_spacing": 2.0,
     "controlled_vehicles": 1,
 
     # Physics
     "simulation_frequency": 10,
-    "policy_frequency": 5,
+    "policy_frequency": 1,
     "screen_width": 600,
     "screen_height": 150,
     "centering_position": [0.3, 0.5],
@@ -49,10 +57,11 @@ ENV_CONFIG = {
 
     # SVO Reward Weights
     "collision_reward": -1.0,
-    "high_speed_reward": 1.0,
+    "high_speed_reward": 0.4,
     "reward_speed_range": [20.0, 30.0],
-    "right_lane_reward": 0.5,
-    "on_road_reward": 1.5,
+    "right_lane_reward": 0.1,
+    "on_road_reward": 1.0,
     "off_road_penalty": 0,
+    "normalize_reward": True,
 
 }

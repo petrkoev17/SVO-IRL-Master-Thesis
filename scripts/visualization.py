@@ -2,7 +2,8 @@ import argparse
 import time
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import PPO
+import pygame
+from stable_baselines3 import PPO, DQN
 from highway_env.envs import HighwayEnv
 
 from configs.env_config import ENV_CONFIG
@@ -24,13 +25,16 @@ def visualize(args):
 
     # Load model
     try:
-        model = PPO.load(args.model_path, env=env)
+        model = DQN.load(args.model_path, env=env)
     except FileNotFoundError:
         print(f"Couldn't find model file at {args.model_path}")
 
     # Run simulation
     obs, info = env.reset(seed=args.seed)
     print("Starting Visualization...")
+
+    pygame.font.init()
+    font = pygame.font.Font(None, 28)
 
     try:
         for _ in range(args.total_timesteps):
@@ -39,6 +43,30 @@ def visualize(args):
             obs, reward, terminated, truncated, info = env.step(action)
 
             env.render()
+
+            viewer = env.unwrapped.viewer
+            if viewer is not None:
+                screen = viewer.screen
+                speed_ms = env.unwrapped.vehicle.speed
+                speed_km = speed_ms * 3.6
+
+                text_str = f"Speed: {speed_km} km/sh"
+
+                if speed_km > 25:
+                    text_color = (50, 255, 50)  # Green
+                elif speed_km < 10:
+                    text_color = (255, 50, 50)  # Red
+                else:
+                    text_color = (255, 255, 255)  # White
+
+                text_surface = font.render(text_str, True, text_color)
+                padding = 5
+                box_rect = text_surface.get_rect(topleft=(10, 10))
+                box_rect.inflate_ip(padding*2, padding*2)
+                pygame.draw.rect(screen, (30, 30, 30), box_rect, border_radius=5)
+
+                screen.blit(text_surface, (15, 15))
+                pygame.display.flip()
 
             if terminated or truncated:
                 print(f"Episode finished. SVO Reward: {info.get('rewards/svo_total', 0):.2f}")
