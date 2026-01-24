@@ -181,7 +181,7 @@ def evaluate(args):
 
         # Episode aggregation
         if ep_self != 0.0 or ep_global != 0.0:
-            svo_ep = np.degrees(np.arctan2(ep_global, ep_self))
+            svo_ep = np.degrees(np.arctan2(ep_global * np.cos(svo_alpha_rad), np.sin(svo_alpha_rad) * ep_self)) # * cos * sin
         else:
             svo_ep = 0.0
 

@@ -40,7 +40,26 @@ def visualize(args):
         for _ in range(args.total_timesteps):
             action, _states = model.predict(obs, deterministic=True)
 
+            ego_vehicle = env.unwrapped.vehicle
+            neighbours = env.unwrapped.road.close_vehicles_to(
+                vehicle=ego_vehicle,
+                distance=50.0,
+                count=env.neighbour_count,
+                sort=True
+            )
+
+
+            svo_neighbors = [v for v in neighbours if v is not ego_vehicle]
+
             obs, reward, terminated, truncated, info = env.step(action)
+
+            for vehicle in env.unwrapped.road.vehicles:
+                if vehicle is ego_vehicle:
+                    vehicle.color = (50, 200, 0)  # Green for ego (default)
+                elif vehicle in svo_neighbors:
+                    vehicle.color = (255, 165, 0)  # Orange for SVO neighbors
+                else:
+                    vehicle.color = (100, 100, 200)  # Blue for others
 
             env.render()
 

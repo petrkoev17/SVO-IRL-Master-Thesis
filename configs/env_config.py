@@ -28,15 +28,6 @@ ENV_CONFIG = {
         "lateral": True,
     },
 
-    # Continuous actions
-    # "action": {
-    #     "type": "ContinuousAction",
-    #     "longitudinal": True,
-    #     "lateral": True,
-    #     "acceleration_range": [-5.0, 5.0],
-    #     "steering_range": [-np.pi/4, np.pi/4],
-    # },
-
     # Traffic
     "lanes_count": 4,
     "vehicles_count": 20,

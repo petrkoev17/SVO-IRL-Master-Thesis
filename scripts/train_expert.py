@@ -59,7 +59,7 @@ def train(args):
     )
 
     # Create vectorized environment
-    num_cpu = 12
+    num_cpu = 4
     env = SubprocVecEnv([
         make_env(i, svo_alpha_rad, args.seed) for i in range(num_cpu)
     ])
@@ -118,7 +118,8 @@ def train(args):
                 gradient_steps=1,
                 target_update_interval=50,
                 verbose=1,
-                tensorboard_log="highway_dqn/")
+                tensorboard_log="highway_dqn/",
+                device="cpu")
 
 
 
