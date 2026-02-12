@@ -14,6 +14,7 @@ from wandb.integration.sb3 import WandbCallback
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_wrapper import SVOWrapper
 from src.envs.svo_pure_wrapper import SVOPureWrapper
+from src.envs.pure_wrapper import BaselineWrapper
 
 def make_env(rank: int, svo_alpha: float, seed: int = 42):
     """
@@ -59,7 +60,7 @@ def train(args):
     )
 
     # Create vectorized environment
-    num_cpu = 4
+    num_cpu = 12
     env = SubprocVecEnv([
         make_env(i, svo_alpha_rad, args.seed) for i in range(num_cpu)
     ])
@@ -119,7 +120,7 @@ def train(args):
                 target_update_interval=50,
                 verbose=1,
                 tensorboard_log="highway_dqn/",
-                device="cpu")
+                device="cuda")
 
 
 

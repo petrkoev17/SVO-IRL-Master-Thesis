@@ -1,4 +1,4 @@
-import numpy as np
+from src.vehicles.randomized_idm_vehicle import RandomizedIDMVehicle
 
 """
 Configuration file for the environment settings.
@@ -31,6 +31,7 @@ ENV_CONFIG = {
     # Traffic
     "lanes_count": 4,
     "vehicles_count": 20,
+    "other_vehicles_type": "src.vehicles.randomized_idm_vehicle.RandomizedIDMVehicle",
     "duration": 30,
     "initial_spacing": 2.0,
     "controlled_vehicles": 1,

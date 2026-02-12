@@ -25,7 +25,8 @@ def visualize(args):
 
     # Load model
     try:
-        model = DQN.load(args.model_path, env=env)
+        # model = DQN.load(args.model_path)
+        model = PPO.load(args.model_path)
     except FileNotFoundError:
         print(f"Couldn't find model file at {args.model_path}")
 

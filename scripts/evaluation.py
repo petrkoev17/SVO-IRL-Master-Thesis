@@ -7,12 +7,15 @@ from highway_env.envs import HighwayEnv
 from rich.console import Console
 from rich.table import Table
 from sympy.solvers.solvers import recast_to_symbols
+from stable_baselines3.common.utils import get_linear_fn
 
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_pure_wrapper import SVOPureWrapper
 
 def evaluate(args):
     # Env setup
+    np.random.seed(args.seed)
+
     config = ENV_CONFIG.copy()
     config.update({
         "render_agent": False,
@@ -29,10 +32,13 @@ def evaluate(args):
 
     # Load model
     try:
-        model = DQN.load(args.model_path, env=env)
+        model = DQN.load(args.model_path)
+        # model = PPO.load(args.model_path)
     except FileNotFoundError:
         console.print(f"[red]Couldn't find model file at {args.model_path}[/red]")
         return
+
+
 
     console.print(f"Starting evaluation over {args.episodes} episodes...")
 
