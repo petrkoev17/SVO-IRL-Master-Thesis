@@ -3,11 +3,14 @@ import time
 import gymnasium as gym
 import numpy as np
 import pygame
+import torch
 from stable_baselines3 import PPO, DQN
 from highway_env.envs import HighwayEnv
 
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_wrapper import SVOWrapper
+from src.algorithms.iq_learner import IQLearnTrainer  # Add this import
+
 
 def visualize(args):
     config = ENV_CONFIG.copy()
@@ -18,17 +21,36 @@ def visualize(args):
     })
 
     env = gym.make(config["id"], render_mode="rgb_array", config=config)
-    env.unwrapped.configure(config)
     env = SVOWrapper(env, svo_alpha=np.deg2rad(args.svo_angle))
     env.reset(seed=args.seed)
 
+    # Load model - detect if IQ-Learn or SB3
+    if args.model_path.endswith('.pt'):
+        # IQ-Learn checkpoint
+        print(f"Loading IQ-Learn model from {args.model_path}")
 
-    # Load model
-    try:
-        # model = DQN.load(args.model_path)
-        model = PPO.load(args.model_path)
-    except FileNotFoundError:
-        print(f"Couldn't find model file at {args.model_path}")
+        state_dim = int(np.prod(env.observation_space.shape))
+        action_dim = env.action_space.n
+
+        trainer = IQLearnTrainer(
+            env=env,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dims=[256, 256],
+            device='cuda' if torch.cuda.is_available() else 'cpu',
+        )
+        trainer.load(args.model_path)
+        model_type = 'iq_learn'
+        model = trainer
+
+    else:
+        # SB3 model (.zip)
+        print(f"Loading SB3 model from {args.model_path}")
+        try:
+            model = DQN.load(args.model_path)
+        except:
+            model = PPO.load(args.model_path)
+        model_type = 'sb3'
 
     # Run simulation
     obs, info = env.reset(seed=args.seed)
@@ -39,7 +61,11 @@ def visualize(args):
 
     try:
         for _ in range(args.total_timesteps):
-            action, _states = model.predict(obs, deterministic=True)
+            # Get action based on model type
+            if model_type == 'iq_learn':
+                action = model.select_action(obs, epsilon=0.0)  # Deterministic
+            else:
+                action, _states = model.predict(obs, deterministic=True)
 
             ego_vehicle = env.unwrapped.vehicle
             neighbours = env.unwrapped.road.close_vehicles_to(
@@ -48,7 +74,6 @@ def visualize(args):
                 count=env.neighbour_count,
                 sort=True
             )
-
 
             svo_neighbors = [v for v in neighbours if v is not ego_vehicle]
 
@@ -70,7 +95,9 @@ def visualize(args):
                 speed_ms = env.unwrapped.vehicle.speed
                 speed_km = speed_ms * 3.6
 
-                text_str = f"Speed: {speed_km} km/sh"
+                # Add model type to display
+                model_name = "IQ-Learn" if model_type == 'iq_learn' else "SB3-DQN"
+                text_str = f"{model_name} | Speed: {speed_km:.1f} km/h"
 
                 if speed_km > 25:
                     text_color = (50, 255, 50)  # Green
@@ -82,7 +109,7 @@ def visualize(args):
                 text_surface = font.render(text_str, True, text_color)
                 padding = 5
                 box_rect = text_surface.get_rect(topleft=(10, 10))
-                box_rect.inflate_ip(padding*2, padding*2)
+                box_rect.inflate_ip(padding * 2, padding * 2)
                 pygame.draw.rect(screen, (30, 30, 30), box_rect, border_radius=5)
 
                 screen.blit(text_surface, (15, 15))
@@ -97,13 +124,18 @@ def visualize(args):
     finally:
         env.close()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize trained SVO agent")
 
-    parser.add_argument("--model_path", type=str, required=True, help="Path to the trained model file")
-    parser.add_argument("--svo_angle", type=float, default=0.0, help="SVO angle used during training (default: 0)")
-    parser.add_argument("--total_timesteps", type=int, default=1_000, help="Number of steps to render")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for traffic generation")
+    parser.add_argument("--model_path", type=str, required=True,
+                        help="Path to trained model (.pt for IQ-Learn, .zip for SB3)")
+    parser.add_argument("--svo_angle", type=float, default=0.0,
+                        help="SVO angle in degrees used during training (default: 0)")
+    parser.add_argument("--total_timesteps", type=int, default=1_000,
+                        help="Number of steps to render")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for traffic generation")
 
     args = parser.parse_args()
     visualize(args)

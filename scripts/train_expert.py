@@ -70,44 +70,6 @@ def train(args):
     save_path = os.path.join("data", "experts", run_name)
     os.makedirs(save_path, exist_ok=True)
 
-    # Initialize PPO Agent
-    # model = PPO(
-    #     policy="MlpPolicy",
-    #     env=env,
-    #     learning_rate=3e-4,
-    #     n_steps=2048,
-    #     batch_size=256,
-    #     n_epochs=10,
-    #     gamma=0.99,
-    #     gae_lambda=0.95,
-    #     clip_range=0.2,
-    #     ent_coef=0.01,
-    #     verbose=1,
-    #     tensorboard_log=f"runs/{run_name}",
-    #     seed=args.seed,
-    #     device="cpu",
-    # )
-
-    # Initialize DQN agent
-    # model = DQN(
-    #     policy="MlpPolicy",
-    #     env=env,
-    #     policy_kwargs=dict(net_arch=[128, 128]),
-    #     learning_rate=1e-3,
-    #     buffer_size=50000,
-    #     learning_starts=1000,
-    #     batch_size=32,
-    #     gamma=0.9,
-    #     train_freq=4,
-    #     gradient_steps=1,
-    #     exploration_fraction=0.3,
-    #     exploration_final_eps=0.1,
-    #     target_update_interval=1000,
-    #     verbose=1,
-    #     tensorboard_log="highway_dqn/",
-    #     device="auto"
-    # )
-
     model = DQN('MlpPolicy', env,
                 policy_kwargs=dict(net_arch=[256, 256]),
                 learning_rate=5e-4,

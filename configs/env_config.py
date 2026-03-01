@@ -32,7 +32,7 @@ ENV_CONFIG = {
     "lanes_count": 4,
     "vehicles_count": 20,
     "other_vehicles_type": "src.vehicles.randomized_idm_vehicle.RandomizedIDMVehicle",
-    "duration": 30,
+    "duration": 50,
     "initial_spacing": 2.0,
     "controlled_vehicles": 1,
 
