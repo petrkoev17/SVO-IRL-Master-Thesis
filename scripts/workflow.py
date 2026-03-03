@@ -30,14 +30,13 @@ from src.envs.svo_pure_wrapper import SVOPureWrapper
 
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians
-# Add your agents here so you can refer to them by name on the command line.
 # ---------------------------------------------------------------------------
 KNOWN_AGENTS = {
     'egoistic':    0.0,
-    'cooperative': math.pi / 8,        # 22.5 deg
-    'prosocial':   math.pi / 4,        # 45 deg
-    'altruistic':  math.pi / 2,        # 90 deg
-    'competitive': 7 * math.pi / 4,    # 315 deg
+    'cooperative': math.pi / 8,
+    'prosocial':   math.pi / 4,
+    'altruistic':  math.pi / 2,
+    'competitive': 7 * math.pi / 4,
 }
 
 
@@ -48,7 +47,7 @@ def parse_svo_angle(value: str) -> float:
     Accepts:
         - A known agent name: 'egoistic', 'altruistic', etc.
         - A raw float in radians: '1.5708'
-        - A degree shorthand:    'deg:90'  (converted to radians internally)
+        - A degree shorthand:    'deg:90'
 
     Always returns a float in radians.
     """
@@ -80,10 +79,6 @@ def create_env_fn(env_config, svo_alpha: float):
     """
     Return a zero-argument factory that creates the environment with the
     given SVO angle (in radians) baked in.
-
-    Args:
-        env_config:  Your ENV_CONFIG dict.
-        svo_alpha:   SVO angle in radians for the SVOPureWrapper.
     """
     def _create():
         env = gym.make(env_config['id'])
@@ -113,14 +108,8 @@ def main():
     # ------------------------------------------------------------------
     # Extraction arguments
     # ------------------------------------------------------------------
-    parser.add_argument(
-        '--agent-path', type=str,
-        help='Path to trained DQN agent (.zip) for demonstration extraction.',
-    )
-    parser.add_argument(
-        '--agent-name', type=str, default='expert',
-        help='Label for the agent (used in file names and logs).',
-    )
+    parser.add_argument('--agent-path', type=str)
+    parser.add_argument('--agent-name', type=str, default='expert')
     parser.add_argument(
         '--svo-angle', type=parse_svo_angle, default=0.0,
         metavar='RADIANS|deg:X|NAME',
@@ -131,112 +120,87 @@ def main():
             '  Degree helper: deg:90\n'
             '  Named preset:  egoistic | cooperative | prosocial |\n'
             '                 altruistic | competitive\n'
-            'Presets map to: 0.0 | pi/8 | pi/4 | pi/2 | 7pi/4\n'
             'Default: 0.0  (egoistic baseline)'
         ),
     )
-    parser.add_argument(
-        '--num-episodes', type=int, default=100,
-        help='Number of episodes to extract per agent.',
-    )
-    parser.add_argument(
-        '--demo-save-dir', type=str, default='./expert_demonstrations',
-        help='Directory to save extracted demonstrations.',
-    )
+    parser.add_argument('--num-episodes', type=int, default=100)
+    parser.add_argument('--demo-save-dir', type=str, default='./expert_demonstrations')
 
     # ------------------------------------------------------------------
     # Training arguments
     # ------------------------------------------------------------------
-    parser.add_argument(
-        '--demo-path', type=str,
-        help='Path to a .pkl demonstrations file (required for --mode train).',
-    )
-    parser.add_argument(
-        '--output-dir', type=str, default=None,
-        help='Directory for training outputs (auto-generated if not set).',
-    )
-    parser.add_argument(
-        '--num-updates', type=int, default=10000,
-        help='Number of gradient updates.',
-    )
-    parser.add_argument(
-        '--batch-size', type=int, default=256,
-        help='Batch size.',
-    )
-    parser.add_argument(
-        '--lr', type=float, default=3e-4,
-        help='Learning rate.',
-    )
+    parser.add_argument('--demo-path', type=str)
+    parser.add_argument('--output-dir', type=str, default=None)
+    parser.add_argument('--num-updates', type=int, default=10000)
+    parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--lr', type=float, default=3e-4)
 
     # ------------------------------------------------------------------
     # IQ-Learn specific
     # ------------------------------------------------------------------
-    parser.add_argument(
-        '--loss-type', type=str, default='v0', choices=['v0', 'v1'],
-        help='IQ-Learn loss variant (v0: Bellman residual, v1: direct Q).',
-    )
-    parser.add_argument(
-        '--temperature', type=float, default=1.0,
-        help='Soft Q-learning temperature.',
-    )
+    parser.add_argument('--loss-type', type=str, default='v0', choices=['v0', 'v1'])
+    parser.add_argument('--temperature', type=float, default=1.0)
+
+    # ------------------------------------------------------------------
+    # SVO regularization
+    # ------------------------------------------------------------------
+    parser.add_argument('--svo-regularize', action='store_true',
+                        help='Enable SVO regularization of the IQ-Learn objective.')
+    parser.add_argument('--svo-alpha-target', type=parse_svo_angle, default=0.0,
+                        metavar='RADIANS|deg:X|NAME',
+                        help='Target SVO angle for regularization (radians). '
+                             'Only used when --svo-regularize is set.')
+    parser.add_argument('--svo-lambda', type=float, default=1.0,
+                        help='SVO regularization strength λ. '
+                             'Only used when --svo-regularize is set.')
 
     # ------------------------------------------------------------------
     # W&B
     # ------------------------------------------------------------------
-    parser.add_argument(
-        '--wandb', action='store_true',
-        help='Enable Weights & Biases logging.',
-    )
-    parser.add_argument(
-        '--wandb-project', type=str, default='svo-irl',
-        help='W&B project name.',
-    )
-    parser.add_argument(
-        '--wandb-run-name', type=str, default=None,
-        help='W&B run name (defaults to agent-name + timestamp).',
-    )
-    parser.add_argument(
-        '--wandb-tags', type=str, nargs='*', default=[],
-        help='W&B tags, e.g. --wandb-tags baseline altruistic deg90',
-    )
+    parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--wandb-project', type=str, default='svo-irl')
+    parser.add_argument('--wandb-run-name', type=str, default=None)
+    parser.add_argument('--wandb-tags', type=str, nargs='*', default=[])
+
     # ------------------------------------------------------------------
     # IQ-Learn Hyperparameters
     # ------------------------------------------------------------------
-    parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor.')
-    parser.add_argument('--tau', type=float, default=0.005, help='Target network soft update parameter.')
-    parser.add_argument('--method', type=str, default='value', choices=['value', 'q'], help='IQ-Learn method.')
-    parser.add_argument('--regularize-weight', type=float, default=1.0, help='Weight for learner regularization loss.')
+    parser.add_argument('--gamma', type=float, default=0.99)
+    parser.add_argument('--tau', type=float, default=0.005)
+    parser.add_argument('--method', type=str, default='value', choices=['value', 'q'])
+    parser.add_argument('--regularize-weight', type=float, default=1.0)
 
     # ------------------------------------------------------------------
     # Online Learner Rollouts
     # ------------------------------------------------------------------
-    parser.add_argument('--collect-learner-data', action='store_true',
-                        help='Enable online learner rollouts (mixed training).')
-    parser.add_argument('--learner-freq', type=int, default=1000, help='Frequency (steps) of learner rollouts.')
-    parser.add_argument('--learner-steps', type=int, default=1000, help='Number of steps to collect per rollout.')
+    parser.add_argument('--collect-learner-data', action='store_true')
+    parser.add_argument('--learner-freq', type=int, default=1000)
+    parser.add_argument('--learner-steps', type=int, default=1000)
 
     # ------------------------------------------------------------------
     # Evaluation & Saving
     # ------------------------------------------------------------------
-    parser.add_argument('--eval-freq', type=int, default=500, help='Frequency of evaluation.')
-    parser.add_argument('--eval-episodes', type=int, default=10, help='Number of episodes per evaluation.')
-    parser.add_argument('--save-freq', type=int, default=2000, help='Frequency of model checkpoints.')
+    parser.add_argument('--eval-freq', type=int, default=500)
+    parser.add_argument('--eval-episodes', type=int, default=10)
+    parser.add_argument('--save-freq', type=int, default=2000)
 
     # ------------------------------------------------------------------
     # Misc
     # ------------------------------------------------------------------
-    parser.add_argument('--seed', type=int, default=42, help='Random seed.')
+    parser.add_argument('--seed', type=int, default=42)
 
     args = parser.parse_args()
 
-    # Import environment config
     from configs.env_config import ENV_CONFIG
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    # Echo resolved SVO angle so it is always visible in logs
-    print(f"\nSVO angle : {args.svo_angle:.6f} rad  "
+    print(f"\nSVO angle (env wrapper) : {args.svo_angle:.6f} rad  "
           f"({math.degrees(args.svo_angle):.2f} deg)")
+    if args.svo_regularize:
+        print(f"SVO target (regularizer): {args.svo_alpha_target:.6f} rad  "
+              f"({math.degrees(args.svo_alpha_target):.2f} deg)")
+        print(f"SVO λ                   : {args.svo_lambda}")
 
     # ==================== EXTRACTION ====================
     if args.mode in ['extract', 'both']:
@@ -276,11 +240,13 @@ def main():
             )
 
         if args.output_dir is None:
+            svo_label = ""
+            if args.svo_regularize:
+                svo_label = f"_svo{math.degrees(args.svo_alpha_target):.0f}deg_lam{args.svo_lambda}"
             args.output_dir = (
-                f'./iq_learn_runs/run_{args.agent_name}_{timestamp}'
+                f'./iq_learn_runs/run_{args.agent_name}{svo_label}_{timestamp}'
             )
 
-        # Auto-generate W&B run name from agent name if not set
         wandb_run_name = args.wandb_run_name or f'{args.agent_name}_{timestamp}'
 
         trainer, training_log = train_iq_learn(
@@ -296,6 +262,11 @@ def main():
             method=args.method,
             loss_type=args.loss_type,
             regularize_weight=args.regularize_weight,
+            # SVO
+            use_svo=args.svo_regularize,
+            svo_alpha=args.svo_alpha_target,
+            svo_lambda=args.svo_lambda,
+            # Training
             collect_learner_data=args.collect_learner_data,
             learner_collection_freq=args.learner_freq,
             learner_rollout_steps=args.learner_steps,
@@ -308,7 +279,6 @@ def main():
             wandb_project=args.wandb_project,
             wandb_run_name=wandb_run_name,
             wandb_tags=args.wandb_tags,
-
         )
 
         print(f"\n✓ Training complete! Results saved to: {args.output_dir}")

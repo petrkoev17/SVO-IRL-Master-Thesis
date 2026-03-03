@@ -1,6 +1,13 @@
 """
 Extract expert demonstrations from trained DQN agents
 Collects trajectories for IQ-Learn training
+
+Each transition is stored as a 8-element tuple:
+    (state, action, reward, next_state, done, crashed, r_self, r_global)
+
+r_self and r_global are the raw SVO reward components from the wrapper,
+independent of whatever α was used during collection. They enable
+SVO-regularized IQ-Learn to recompute R_SVO with any target angle.
 """
 
 import gymnasium as gym
@@ -21,18 +28,11 @@ def extract_demonstrations_from_agent(
     verbose: bool = True
 ) -> Tuple[List[List[Tuple]], Dict[str, float]]:
     """
-    Extract demonstrations from a trained DQN agent
-
-    Args:
-        agent: Trained DQN agent
-        env: Environment to collect trajectories in
-        num_episodes: Number of episodes to collect
-        deterministic: Whether to use deterministic actions
-        max_steps_per_episode: Maximum steps per episode
-        verbose: Whether to print progress
+    Extract demonstrations from a trained DQN agent.
 
     Returns:
-        trajectories: List of trajectories, each trajectory is a list of (s, a, r, s', done)
+        trajectories: List of trajectories, each trajectory is a list of
+                      (s, a, r, s', done, crashed, r_self, r_global)
         stats: Dictionary of statistics about the collected demonstrations
     """
     trajectories = []
@@ -57,7 +57,11 @@ def extract_demonstrations_from_agent(
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            # Store transition
+            # Extract SVO reward components (available from SVOPureWrapper)
+            r_self = float(info.get('rewards/component_self', 0.0))
+            r_global = float(info.get('rewards/component_global', 0.0))
+
+            # Store transition with SVO components
             trajectory.append((
                 state.copy(),
                 int(action),
@@ -65,6 +69,8 @@ def extract_demonstrations_from_agent(
                 next_state.copy(),
                 float(done),
                 bool(info.get('crashed', False)),
+                r_self,
+                r_global,
             ))
 
             episode_reward += reward
@@ -139,19 +145,18 @@ def load_demonstrations(load_path: str) -> Tuple[List[List[Tuple]], Dict[str, fl
 
 def extract_from_multiple_agents(
     agent_paths: Dict[str, str],
-    env_fn,  # Single callable OR dict mapping agent_name -> callable
+    env_fn,
     num_episodes_per_agent: int = 100,
     save_dir: str = './expert_demonstrations',
     deterministic: bool = True
 ) -> Dict[str, str]:
     """
-    Extract demonstrations from multiple agents with different SVO angles
+    Extract demonstrations from multiple agents with different SVO angles.
 
     Args:
         agent_paths: Dictionary mapping agent names to model paths
         env_fn: Either a single callable (same env for all agents) OR a dict
-                mapping agent_name -> callable, so each agent gets its own
-                environment with the correct SVO angle in radians.
+                mapping agent_name -> callable
         num_episodes_per_agent: Number of episodes to collect per agent
         save_dir: Directory to save demonstrations
         deterministic: Whether to use deterministic actions
@@ -168,19 +173,15 @@ def extract_from_multiple_agents(
         print(f"Model path: {agent_path}")
         print(f"{'='*60}")
 
-        # Resolve env factory: per-agent dict or shared callable
+        # Resolve env factory
         if isinstance(env_fn, dict):
             agent_env_fn = env_fn[agent_name]
         else:
             agent_env_fn = env_fn
 
-        # Create environment
         env = agent_env_fn()
-
-        # Load agent
         agent = DQN.load(agent_path)
 
-        # Extract demonstrations
         trajectories, stats = extract_demonstrations_from_agent(
             agent=agent,
             env=env,
@@ -189,7 +190,6 @@ def extract_from_multiple_agents(
             verbose=True
         )
 
-        # Save demonstrations
         save_path = os.path.join(save_dir, f"{agent_name}_demonstrations.pkl")
         metadata = {
             'agent_name': agent_name,
@@ -204,80 +204,41 @@ def extract_from_multiple_agents(
     return demo_paths
 
 
-# def combine_demonstrations(
-#     demo_paths: List[str],
-#     output_path: str,
-#     weights: Optional[List[float]] = None
-# ) -> Tuple[List[List[Tuple]], Dict[str, float]]:
-#     """
-#     Combine demonstrations from multiple sources
-#
-#     Args:
-#         demo_paths: List of paths to demonstration files
-#         output_path: Path to save combined demonstrations
-#         weights: Optional weights for sampling from each source (must sum to 1)
-#
-#     Returns:
-#         combined_trajectories: Combined list of trajectories
-#         combined_stats: Statistics of combined dataset
-#     """
-#     if weights is not None:
-#         assert len(weights) == len(demo_paths), "Weights must match number of demo sources"
-#         assert abs(sum(weights) - 1.0) < 1e-6, "Weights must sum to 1"
-#     else:
-#         weights = [1.0 / len(demo_paths)] * len(demo_paths)
-#
-#     all_trajectories = []
-#     all_stats = []
-#
-#     # Load all demonstrations
-#     for path in demo_paths:
-#         trajectories, stats, metadata = load_demonstrations(path)
-#         all_trajectories.append(trajectories)
-#         all_stats.append(stats)
-#         print(f"Loaded {len(trajectories)} trajectories from {path}")
-#
-#     # Combine based on weights
-#     combined_trajectories = []
-#     for trajs, weight in zip(all_trajectories, weights):
-#         num_samples = int(len(trajs) * weight * len(demo_paths))
-#         sampled_indices = np.random.choice(len(trajs), size=num_samples, replace=True)
-#         sampled_trajs = [trajs[i] for i in sampled_indices]
-#         combined_trajectories.extend(sampled_trajs)
-#
-#     # Compute combined statistics
-#     all_rewards = []
-#     all_lengths = []
-#     collision_count = 0
-#
-#     for traj in combined_trajectories:
-#         traj_reward = sum(t[2] for t in traj)
-#         all_rewards.append(traj_reward)
-#         all_lengths.append(len(traj))
-#
-#         # Check if last transition is a collision
-#         if any(t[5] for t in traj):
-#             collision_count += 1
-#
-#     combined_stats = {
-#         'num_episodes': len(combined_trajectories),
-#         'total_transitions': sum(len(traj) for traj in combined_trajectories),
-#         'mean_reward': float(np.mean(all_rewards)),
-#         'std_reward': float(np.std(all_rewards)),
-#         'mean_length': float(np.mean(all_lengths)),
-#         'std_length': float(np.std(all_lengths)),
-#         'collision_rate': float(collision_count / len(combined_trajectories)),
-#     }
-#
-#     # Save combined demonstrations
-#     metadata = {
-#         'source_paths': demo_paths,
-#         'weights': weights,
-#         'num_sources': len(demo_paths)
-#     }
-#     save_demonstrations(combined_trajectories, combined_stats, output_path, metadata)
-#
-#     return combined_trajectories, combined_stats
+def compute_stats_from_trajectories(
+    trajectories: List[List[Tuple]],
+) -> Dict[str, float]:
+    """
+    Compute statistics directly from a list of trajectories.
+
+    Works with any tuple length >= 5. Collision detection uses:
+        - index [5] (crashed) for 6- and 8-element tuples
+        - not available for 5-element tuples
+    """
+    all_rewards = []
+    all_lengths = []
+    collision_count = 0
+
+    for traj in trajectories:
+        traj_reward = sum(t[2] for t in traj)
+        all_rewards.append(traj_reward)
+        all_lengths.append(len(traj))
+
+        # Check for collision — 'crashed' is at index [5] in both
+        # the legacy 6-element and current 8-element formats
+        if len(traj[0]) >= 6:
+            if any(t[5] for t in traj):
+                collision_count += 1
+
+    n = len(trajectories)
+    return {
+        'num_episodes': n,
+        'total_transitions': sum(all_lengths),
+        'mean_reward': float(np.mean(all_rewards)),
+        'std_reward': float(np.std(all_rewards)),
+        'mean_length': float(np.mean(all_lengths)),
+        'std_length': float(np.std(all_lengths)),
+        'collision_rate': float(collision_count / n) if n > 0 else 0.0,
+    }
 
 
 def combine_demonstrations(
@@ -286,8 +247,18 @@ def combine_demonstrations(
         weights: Optional[List[float]] = None
 ) -> Tuple[List[List[Tuple]], Dict[str, float]]:
     """
-    Combine demonstrations using saved stats for means, but re-computing
-    STD for both Reward and Length from the sampled trajectories.
+    Combine demonstrations from multiple sources by sampling according
+    to the given weights. All statistics are computed from the actual
+    sampled trajectories (not from the original per-source stats).
+
+    Args:
+        demo_paths: List of paths to demonstration .pkl files.
+        output_path: Path to save the combined .pkl file.
+        weights: Sampling weights per source (must sum to 1).
+                 Defaults to uniform.
+
+    Returns:
+        combined_trajectories, combined_stats
     """
     if weights is not None:
         assert len(weights) == len(demo_paths), "Weights must match number of demo sources"
@@ -296,13 +267,10 @@ def combine_demonstrations(
         weights = [1.0 / len(demo_paths)] * len(demo_paths)
 
     combined_trajectories = []
-    weighted_mean_reward = 0.0
-    weighted_mean_length = 0.0
-    weighted_collision_rate = 0.0
-    total_transitions = 0
 
     for path, weight in zip(demo_paths, weights):
-        trajectories, stats, metadata = load_demonstrations(path)
+        trajectories, stats, _ = load_demonstrations(path)
+        print(f"Loaded {len(trajectories)} trajectories from {path}")
 
         num_to_sample = int(len(trajectories) * weight * len(demo_paths))
         sampled_indices = np.random.choice(len(trajectories), size=num_to_sample, replace=True)
@@ -310,32 +278,12 @@ def combine_demonstrations(
 
         combined_trajectories.extend(sampled_trajs)
 
-        weighted_mean_reward += stats['mean_reward'] * weight
-        weighted_mean_length += stats['mean_length'] * weight
-        weighted_collision_rate += stats['collision_rate'] * weight
-        total_transitions += sum(len(t) for t in sampled_trajs)
+    # Compute stats from the actual combined data
+    combined_stats = compute_stats_from_trajectories(combined_trajectories)
 
-    combined_episode_rewards = [sum(t[2] for t in traj) for traj in combined_trajectories]
-    combined_episode_lengths = [len(traj) for traj in combined_trajectories]
-
-    true_std_reward = float(np.std(combined_episode_rewards))
-    true_std_length = float(np.std(combined_episode_lengths))
-
-    combined_stats = {
-        'num_episodes': len(combined_trajectories),
-        'total_transitions': total_transitions,
-        'mean_reward': weighted_mean_reward,
-        'std_reward': true_std_reward,
-        'mean_length': weighted_mean_length,
-        'std_length': true_std_length,  # <--- Added true STD of length
-        'collision_rate': weighted_collision_rate,
-    }
-
-    # Save
     metadata = {
         'source_paths': demo_paths,
         'weights': weights,
-        'calculation_method': "weighted_stats_with_sampled_stds"
     }
     save_demonstrations(combined_trajectories, combined_stats, output_path, metadata)
 
@@ -343,6 +291,5 @@ def combine_demonstrations(
 
 
 if __name__ == "__main__":
-    # Example usage
     print("This is a utility module for extracting demonstrations.")
     print("Import and use the functions in your training script.")

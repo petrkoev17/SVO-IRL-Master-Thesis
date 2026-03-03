@@ -1,6 +1,9 @@
 """
-Main training script for IQ-Learn with highway-env
-Baseline version without SVO regularization
+Main training script for IQ-Learn with highway-env.
+
+Supports both:
+  - Standard IQ-Learn baseline (default)
+  - SVO-Regularized IQ-Learn (--svo-regularize)
 """
 
 import gymnasium as gym
@@ -29,8 +32,7 @@ def create_env(config: Dict, svo_angle: float = 0.0, render_mode: str = None):
     """
     Create highway environment with SVO wrapper.
     Args:
-        svo_angle: SVO angle in radians (e.g. np.deg2rad(90) for altruistic).
-                   Baseline uses 0.0 (egoistic). Wrapper is kept for statistics only.
+        svo_angle: SVO angle in radians. Wrapper is kept for statistics.
     """
     env = gym.make(config['id'], config=config, render_mode=render_mode)
     env = SVOPureWrapper(env, svo_alpha=svo_angle, lamb=1.0)
@@ -79,6 +81,10 @@ def train_iq_learn(
     method: str = 'value',
     loss_type: str = 'v0',
     regularize_weight: float = 1.0,
+    # SVO regularization
+    use_svo: bool = False,
+    svo_alpha: float = 0.0,
+    svo_lambda: float = 1.0,
     # Training settings
     collect_learner_data: bool = False,
     learner_collection_freq: int = 1000,
@@ -106,7 +112,7 @@ def train_iq_learn(
     os.makedirs(output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # Config dict (used for both local save and W&B)
+    # Config dict
     # ------------------------------------------------------------------
     config_save = {
         'expert_demo_path': expert_demo_path,
@@ -121,7 +127,12 @@ def train_iq_learn(
         'regularize_weight': regularize_weight,
         'collect_learner_data': collect_learner_data,
         'seed': seed,
-        # Flatten env config into the same dict so W&B shows it cleanly
+        # SVO
+        'use_svo': use_svo,
+        'svo_alpha': svo_alpha,
+        'svo_alpha_deg': float(np.degrees(svo_alpha)) if use_svo else None,
+        'svo_lambda': svo_lambda if use_svo else None,
+        # Flatten env config
         **{f'env/{k}': v for k, v in env_config.items()
            if not isinstance(v, dict)},
     }
@@ -130,15 +141,13 @@ def train_iq_learn(
         json.dump(config_save, f, indent=4)
 
     # ------------------------------------------------------------------
-    # W&B initialisation
+    # W&B
     # ------------------------------------------------------------------
     if use_wandb:
         try:
             import wandb
         except ImportError:
-            raise ImportError(
-                "wandb is not installed. Run: pip install wandb"
-            )
+            raise ImportError("wandb is not installed. Run: pip install wandb")
 
         wandb.init(
             project=wandb_project,
@@ -152,12 +161,16 @@ def train_iq_learn(
     # ------------------------------------------------------------------
     # Environment
     # ------------------------------------------------------------------
+    header = "SVO-Regularized IQ-Learn" if use_svo else "IQ-Learn (Baseline)"
     print(f"\n{'='*60}")
-    print(f"IQ-Learn Training")
+    print(f"{header} Training")
     print(f"{'='*60}")
     print(f"Output directory : {output_dir}")
     print(f"Device           : {device}")
     print(f"Expert demos     : {expert_demo_path}")
+    if use_svo:
+        print(f"SVO α_target     : {np.degrees(svo_alpha):.1f}° ({svo_alpha:.4f} rad)")
+        print(f"SVO λ            : {svo_lambda}")
 
     env = create_env(env_config, svo_angle=0.0)
 
@@ -175,7 +188,20 @@ def train_iq_learn(
     print(f"Loaded {len(expert_trajectories)} trajectories")
     print(f"Expert stats: {expert_stats}")
 
+    # Check if demonstrations contain SVO components
+    if expert_trajectories and expert_trajectories[0]:
+        sample_len = len(expert_trajectories[0][0])
+        has_svo = sample_len >= 8  # (s, a, r, s', done, crashed, r_self, r_global)
+        print(f"Transition format: {sample_len} elements ({'with' if has_svo else 'without'} SVO components)")
+        if use_svo and not has_svo:
+            print(
+                "\n⚠  WARNING: SVO regularization is enabled but demonstrations "
+                "lack r_self/r_global fields. Re-extract demonstrations using "
+                "the updated extraction script. SVO shaping will have no effect."
+            )
+
     if use_wandb:
+        import wandb
         wandb.run.summary['expert/mean_reward']    = expert_stats['mean_reward']
         wandb.run.summary['expert/collision_rate'] = expert_stats['collision_rate']
         wandb.run.summary['expert/mean_length']    = expert_stats['mean_length']
@@ -184,7 +210,7 @@ def train_iq_learn(
     # ------------------------------------------------------------------
     # Trainer
     # ------------------------------------------------------------------
-    print(f"\nInitializing IQ-Learn trainer...")
+    print(f"\nInitializing trainer...")
     trainer = IQLearnTrainer(
         env=env,
         state_dim=state_dim,
@@ -198,6 +224,10 @@ def train_iq_learn(
         loss_type=loss_type,
         regularize_weight=regularize_weight,
         temperature=temperature,
+        # SVO
+        use_svo=use_svo,
+        svo_alpha=svo_alpha,
+        svo_lambda=svo_lambda,
     )
 
     trainer.load_expert_demonstrations(expert_trajectories)
@@ -211,6 +241,7 @@ def train_iq_learn(
         'expert_q_means': [],
         'eval_rewards': [],
         'eval_collision_rates': [],
+        'svo_reward_means': [],
     }
 
     # ------------------------------------------------------------------
@@ -225,6 +256,7 @@ def train_iq_learn(
     training_log['eval_collision_rates'].append(eval_results['collision_rate'])
 
     if use_wandb:
+        import wandb
         wandb.log({
             'eval/mean_reward':    eval_results['mean_reward'],
             'eval/std_reward':     eval_results['std_reward'],
@@ -257,9 +289,12 @@ def train_iq_learn(
         # Local log
         training_log['losses'].append(update_info['loss'])
         training_log['expert_q_means'].append(update_info['expert_q_mean'])
+        if 'svo_reward_mean' in update_info:
+            training_log['svo_reward_means'].append(update_info['svo_reward_mean'])
 
-        # W&B — log every update
+        # W&B
         if use_wandb:
+            import wandb
             log_dict = {
                 'train/loss':           update_info['loss'],
                 'train/expert_q_mean':  update_info['expert_q_mean'],
@@ -268,14 +303,16 @@ def train_iq_learn(
             if 'learner_q_mean' in update_info:
                 log_dict['train/learner_q_mean'] = update_info['learner_q_mean']
                 log_dict['train/learner_v_mean'] = update_info['learner_next_v_mean']
+            if 'svo_reward_mean' in update_info:
+                log_dict['train/svo_reward_mean'] = update_info['svo_reward_mean']
             wandb.log(log_dict, step=update)
 
-        # Progress bar description
+        # Progress bar
         if update % 10 == 0:
-            pbar.set_description(
-                f"Loss: {update_info['loss']:.4f}  "
-                f"Expert Q: {update_info['expert_q_mean']:.3f}"
-            )
+            desc = f"Loss: {update_info['loss']:.4f}  Expert Q: {update_info['expert_q_mean']:.3f}"
+            if 'svo_reward_mean' in update_info:
+                desc += f"  SVO R: {update_info['svo_reward_mean']:.3f}"
+            pbar.set_description(desc)
 
         # Periodic evaluation
         if update % eval_freq == 0:
@@ -290,9 +327,13 @@ def train_iq_learn(
             print(f"  Length        : {eval_results['mean_length']:.1f}")
             print(f"  Collision rate: {eval_results['collision_rate']:.2%}")
             print(f"  Loss          : {update_info['loss']:.4f}")
-            print(f"  Expert Q      : {update_info['expert_q_mean']:.3f}\n")
+            print(f"  Expert Q      : {update_info['expert_q_mean']:.3f}")
+            if 'svo_reward_mean' in update_info:
+                print(f"  SVO reward    : {update_info['svo_reward_mean']:.3f}")
+            print()
 
             if use_wandb:
+                import wandb
                 wandb.log({
                     'eval/mean_reward':    eval_results['mean_reward'],
                     'eval/std_reward':     eval_results['std_reward'],
@@ -305,6 +346,7 @@ def train_iq_learn(
             ckpt_path = os.path.join(output_dir, f'iq_learn_model_update_{update}.pt')
             trainer.save(ckpt_path)
             if use_wandb:
+                import wandb
                 wandb.save(ckpt_path)
 
     # ------------------------------------------------------------------
@@ -321,6 +363,7 @@ def train_iq_learn(
     print(f"  Collision rate: {final_eval['collision_rate']:.2%}")
 
     if use_wandb:
+        import wandb
         wandb.run.summary['final/mean_reward']    = final_eval['mean_reward']
         wandb.run.summary['final/std_reward']     = final_eval['std_reward']
         wandb.run.summary['final/mean_length']    = final_eval['mean_length']
@@ -347,6 +390,7 @@ def train_iq_learn(
         json.dump(final_results, f, indent=4)
 
     if use_wandb:
+        import wandb
         wandb.save(final_model_path)
         wandb.save(log_path)
         wandb.log_artifact(final_model_path, name='iq_learn_final_model', type='model')
@@ -379,6 +423,14 @@ def main():
     parser.add_argument('--loss-type',         type=str,   default='v0',    choices=['v0', 'v1'])
     parser.add_argument('--regularize-weight', type=float, default=1.0)
 
+    # SVO regularization
+    parser.add_argument('--svo-regularize', action='store_true',
+                        help='Enable SVO regularization of the IQ-Learn objective.')
+    parser.add_argument('--svo-alpha', type=float, default=0.0,
+                        help='Target SVO angle in radians (only used when --svo-regularize is set).')
+    parser.add_argument('--svo-lambda', type=float, default=1.0,
+                        help='SVO regularization strength (only used when --svo-regularize is set).')
+
     # Learner rollouts
     parser.add_argument('--collect-learner-data', action='store_true')
     parser.add_argument('--learner-freq',  type=int, default=1000)
@@ -389,14 +441,10 @@ def main():
     parser.add_argument('--eval-episodes', type=int, default=10)
 
     # W&B
-    parser.add_argument('--wandb',          action='store_true',
-                        help='Enable Weights & Biases logging')
-    parser.add_argument('--wandb-project',  type=str, default='svo-irl',
-                        help='W&B project name')
-    parser.add_argument('--wandb-run-name', type=str, default=None,
-                        help='W&B run name (auto-generated if not set)')
-    parser.add_argument('--wandb-tags',     type=str, nargs='*', default=[],
-                        help='W&B tags, e.g. --wandb-tags baseline altruistic')
+    parser.add_argument('--wandb',          action='store_true')
+    parser.add_argument('--wandb-project',  type=str, default='svo-irl')
+    parser.add_argument('--wandb-run-name', type=str, default=None)
+    parser.add_argument('--wandb-tags',     type=str, nargs='*', default=[])
 
     # Misc
     parser.add_argument('--seed',   type=int, default=42)
@@ -406,7 +454,8 @@ def main():
 
     if args.output_dir is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.output_dir = f'./iq_learn_runs/run_{timestamp}'
+        svo_label = f"_svo{np.degrees(args.svo_alpha):.0f}deg" if args.svo_regularize else ""
+        args.output_dir = f'./iq_learn_runs/run{svo_label}_{timestamp}'
 
     device = ('cuda' if torch.cuda.is_available() else 'cpu') \
              if args.device == 'auto' else args.device
@@ -425,6 +474,11 @@ def main():
         method=args.method,
         loss_type=args.loss_type,
         regularize_weight=args.regularize_weight,
+        # SVO
+        use_svo=args.svo_regularize,
+        svo_alpha=args.svo_alpha,
+        svo_lambda=args.svo_lambda,
+        # Training
         collect_learner_data=args.collect_learner_data,
         learner_collection_freq=args.learner_freq,
         learner_rollout_steps=args.learner_steps,
