@@ -153,6 +153,8 @@ def main():
     parser.add_argument('--svo-lambda', type=float, default=1.0,
                         help='SVO regularization strength λ. '
                              'Only used when --svo-regularize is set.')
+    parser.add_argument('--normalize-svo', action='store_true',
+                        help='Batch-normalize R_SVO to zero mean / unit variance.')
 
     # ------------------------------------------------------------------
     # W&B
@@ -266,6 +268,7 @@ def main():
             use_svo=args.svo_regularize,
             svo_alpha=args.svo_alpha_target,
             svo_lambda=args.svo_lambda,
+            normalize_svo=args.normalize_svo,
             # Training
             collect_learner_data=args.collect_learner_data,
             learner_collection_freq=args.learner_freq,

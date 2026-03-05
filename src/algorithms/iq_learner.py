@@ -141,6 +141,7 @@ class IQLearnTrainer:
                  use_svo: bool = False,
                  svo_alpha: float = 0.0,
                  svo_lambda: float = 1.0,
+                 normalize_svo: bool = False,
     ):
         self.env = env
         self.state_dim = state_dim
@@ -161,11 +162,13 @@ class IQLearnTrainer:
         self.svo_lambda = svo_lambda        # regularization strength
         self.cos_alpha = np.cos(svo_alpha)
         self.sin_alpha = np.sin(svo_alpha)
+        self.normalize_svo = normalize_svo
 
         if self.use_svo:
             print(f"[SVO-IQ] SVO regularization ENABLED")
-            print(f"[SVO-IQ]   α_target = {np.degrees(svo_alpha):.1f}°  ({svo_alpha:.4f} rad)")
-            print(f"[SVO-IQ]   λ        = {svo_lambda}")
+            print(f"[SVO-IQ]   α_target   = {np.degrees(svo_alpha):.1f}°  ({svo_alpha:.4f} rad)")
+            print(f"[SVO-IQ]   λ          = {svo_lambda}")
+            print(f"[SVO-IQ]   normalize  = {normalize_svo}")
         else:
             print(f"[IQ-Learn] Standard IQ-Learn (no SVO regularization)")
 
@@ -271,6 +274,15 @@ class IQLearnTrainer:
         if self.use_svo:
             r_svo = self._compute_svo_reward(expert_r_selfs, expert_r_globals)
             r_svo = r_svo.to(self.device)
+
+            # Optional: normalize to zero mean, unit variance within the batch
+            # This makes R_SVO a relative ranking signal rather than an
+            # absolute bias, preventing net upward pressure on Q-values.
+            if self.normalize_svo:
+                svo_mean = r_svo.mean()
+                svo_std = r_svo.std() + 1e-8  # avoid division by zero
+                r_svo = (r_svo - svo_mean) / svo_std
+
             svo_shift = self.svo_lambda * r_svo
         else:
             svo_shift = 0.0  # scalar zero, broadcasts cleanly
@@ -472,6 +484,7 @@ class IQLearnTrainer:
             'use_svo': self.use_svo,
             'svo_alpha': self.svo_alpha,
             'svo_lambda': self.svo_lambda,
+            'normalize_svo': self.normalize_svo,
         }, path)
         print(f"Saved model to {path}")
 

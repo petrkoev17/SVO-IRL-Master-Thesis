@@ -85,6 +85,7 @@ def train_iq_learn(
     use_svo: bool = False,
     svo_alpha: float = 0.0,
     svo_lambda: float = 1.0,
+    normalize_svo: bool = False,
     # Training settings
     collect_learner_data: bool = False,
     learner_collection_freq: int = 1000,
@@ -132,6 +133,7 @@ def train_iq_learn(
         'svo_alpha': svo_alpha,
         'svo_alpha_deg': float(np.degrees(svo_alpha)) if use_svo else None,
         'svo_lambda': svo_lambda if use_svo else None,
+        'normalize_svo': normalize_svo if use_svo else None,
         # Flatten env config
         **{f'env/{k}': v for k, v in env_config.items()
            if not isinstance(v, dict)},
@@ -171,6 +173,7 @@ def train_iq_learn(
     if use_svo:
         print(f"SVO α_target     : {np.degrees(svo_alpha):.1f}° ({svo_alpha:.4f} rad)")
         print(f"SVO λ            : {svo_lambda}")
+        print(f"SVO normalize    : {normalize_svo}")
 
     env = create_env(env_config, svo_angle=0.0)
 
@@ -228,6 +231,7 @@ def train_iq_learn(
         use_svo=use_svo,
         svo_alpha=svo_alpha,
         svo_lambda=svo_lambda,
+        normalize_svo=normalize_svo,
     )
 
     trainer.load_expert_demonstrations(expert_trajectories)
@@ -347,7 +351,7 @@ def train_iq_learn(
             trainer.save(ckpt_path)
             if use_wandb:
                 import wandb
-                wandb.save(ckpt_path)
+                wandb.save(ckpt_path, base_path=output_dir)
 
     # ------------------------------------------------------------------
     # Final evaluation
@@ -391,8 +395,8 @@ def train_iq_learn(
 
     if use_wandb:
         import wandb
-        wandb.save(final_model_path)
-        wandb.save(log_path)
+        wandb.save(final_model_path, base_path=output_dir)
+        wandb.save(log_path, base_path=output_dir)
         wandb.log_artifact(final_model_path, name='iq_learn_final_model', type='model')
         wandb.finish()
 
@@ -430,6 +434,8 @@ def main():
                         help='Target SVO angle in radians (only used when --svo-regularize is set).')
     parser.add_argument('--svo-lambda', type=float, default=1.0,
                         help='SVO regularization strength (only used when --svo-regularize is set).')
+    parser.add_argument('--normalize-svo', action='store_true',
+                        help='Batch-normalize R_SVO to zero mean / unit variance before applying.')
 
     # Learner rollouts
     parser.add_argument('--collect-learner-data', action='store_true')
@@ -478,6 +484,7 @@ def main():
         use_svo=args.svo_regularize,
         svo_alpha=args.svo_alpha,
         svo_lambda=args.svo_lambda,
+        normalize_svo=args.normalize_svo,
         # Training
         collect_learner_data=args.collect_learner_data,
         learner_collection_freq=args.learner_freq,

@@ -1,16 +1,56 @@
 import argparse
 import numpy as np
 import gymnasium as gym
+import torch
 
 from stable_baselines3 import DQN, PPO
 from highway_env.envs import HighwayEnv
 from rich.console import Console
 from rich.table import Table
-from sympy.solvers.solvers import recast_to_symbols
-from stable_baselines3.common.utils import get_linear_fn
 
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_pure_wrapper import SVOPureWrapper
+from src.algorithms.iq_learner import IQLearnTrainer
+
+
+def load_model(model_path, env):
+    """
+    Load a model from either a .pt (IQ-Learn) or .zip (SB3) file.
+
+    Returns:
+        model: The loaded model object
+        model_type: 'iq_learn' or 'sb3'
+    """
+    if model_path.endswith('.pt'):
+        state_dim = int(np.prod(env.observation_space.shape))
+        action_dim = env.action_space.n
+
+        trainer = IQLearnTrainer(
+            env=env,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dims=[256, 256],
+            device='cuda' if torch.cuda.is_available() else 'cpu',
+        )
+        trainer.load(model_path)
+        return trainer, 'iq_learn'
+    else:
+        # SB3 model (.zip)
+        try:
+            model = DQN.load(model_path)
+        except Exception:
+            model = PPO.load(model_path)
+        return model, 'sb3'
+
+
+def predict_action(model, model_type, obs):
+    """Get a deterministic action from the model."""
+    if model_type == 'iq_learn':
+        return model.select_action(obs, epsilon=0.0)
+    else:
+        action, _ = model.predict(obs, deterministic=True)
+        return action
+
 
 def evaluate(args):
     # Env setup
@@ -32,14 +72,13 @@ def evaluate(args):
 
     # Load model
     try:
-        model = DQN.load(args.model_path)
-        # model = PPO.load(args.model_path)
+        model, model_type = load_model(args.model_path, env)
     except FileNotFoundError:
         console.print(f"[red]Couldn't find model file at {args.model_path}[/red]")
         return
 
-
-
+    model_label = "IQ-Learn" if model_type == 'iq_learn' else "SB3"
+    console.print(f"Loaded {model_label} model from {args.model_path}")
     console.print(f"Starting evaluation over {args.episodes} episodes...")
 
     # Metrics
@@ -95,7 +134,7 @@ def evaluate(args):
         last_lane = ego_vehicle.lane_index[2]
 
         while not (terminated or truncated):
-            action, _ = model.predict(obs, deterministic=True)
+            action = predict_action(model, model_type, obs)
             obs, reward, terminated, truncated, info = env.step(action)
 
             ep_reward += reward
@@ -141,7 +180,6 @@ def evaluate(args):
             for v in env.unwrapped.road.vehicles:
                 if v is ego_vehicle:
                     continue
-                # Check if in same lane and behind
                 if (v.lane_index[2] == ego_vehicle.lane_index[2] and
                         v.position[0] < ego_vehicle.position[0]):
                     distance = ego_vehicle.position[0] - v.position[0]
@@ -149,9 +187,8 @@ def evaluate(args):
                         min_rear_distance = distance
                         rear_vehicle = v
 
-            # Check for brake checking: hard braking with car close behind
             if rear_vehicle is not None and min_rear_distance < 30:
-                if accel < -3.0:  # Hard braking threshold
+                if accel < -3.0:
                     ep_brake_checks += 1
 
             last_speed = ego_vehicle.speed
@@ -187,7 +224,7 @@ def evaluate(args):
 
         # Episode aggregation
         if ep_self != 0.0 or ep_global != 0.0:
-            svo_ep = np.degrees(np.arctan2(ep_global * np.cos(svo_alpha_rad), np.sin(svo_alpha_rad) * ep_self)) # * cos * sin
+            svo_ep = np.degrees(np.arctan2(ep_global * np.cos(svo_alpha_rad), np.sin(svo_alpha_rad) * ep_self))
         else:
             svo_ep = 0.0
 
@@ -229,7 +266,7 @@ def evaluate(args):
     delta = ((avg_svo_episode - args.svo_angle + 180) % 360) - 180
 
     # Build Table
-    table = Table(title=f"Evaluation: {args.svo_angle}° Agent (Seed {args.seed})")
+    table = Table(title=f"Evaluation: {args.svo_angle}° Agent [{model_label}] (Seed {args.seed})")
 
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Mean", style="magenta")
@@ -314,7 +351,6 @@ def evaluate(args):
     console.print("\n")
     console.print(table)
 
-    # Additional ratio information
     if avg_self != 0:
         console.print(
             f"[italic]Global/Self Ratio: {avg_global / avg_self:.3f}[/italic]"
@@ -322,10 +358,14 @@ def evaluate(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True, help="Path to model.zip")
-    parser.add_argument("--svo_angle", type=float, default=0.0, help="SVO angle used for reward calculation")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--model_path", type=str, required=True,
+                        help="Path to model (.pt for IQ-Learn, .zip for SB3)")
+    parser.add_argument("--svo_angle", type=float, default=0.0,
+                        help="SVO angle used for reward calculation")
+    parser.add_argument("--episodes", type=int, default=10,
+                        help="Number of episodes")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed")
 
     args = parser.parse_args()
     evaluate(args)
