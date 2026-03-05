@@ -272,16 +272,18 @@ class IQLearnTrainer:
 
         # ---- SVO reward shaping (only for expert data) ----
         if self.use_svo:
-            r_svo = self._compute_svo_reward(expert_r_selfs, expert_r_globals)
-            r_svo = r_svo.to(self.device)
+            r_svo_raw = self._compute_svo_reward(expert_r_selfs, expert_r_globals)
+            r_svo_raw = r_svo_raw.to(self.device)
 
             # Optional: normalize to zero mean, unit variance within the batch
             # This makes R_SVO a relative ranking signal rather than an
             # absolute bias, preventing net upward pressure on Q-values.
             if self.normalize_svo:
-                svo_mean = r_svo.mean()
-                svo_std = r_svo.std() + 1e-8  # avoid division by zero
-                r_svo = (r_svo - svo_mean) / svo_std
+                svo_mean = r_svo_raw.mean()
+                svo_std = r_svo_raw.std() + 1e-8  # avoid division by zero
+                r_svo = (r_svo_raw - svo_mean) / svo_std
+            else:
+                r_svo = r_svo_raw
 
             svo_shift = self.svo_lambda * r_svo
         else:
@@ -333,7 +335,12 @@ class IQLearnTrainer:
         }
 
         if self.use_svo:
-            info['svo_reward_mean'] = r_svo.mean().item()
+            info['svo_raw_mean'] = r_svo_raw.mean().item()
+            info['svo_raw_std'] = r_svo_raw.std().item()
+            info['svo_shift_mean'] = svo_shift.mean().item()
+            info['svo_shift_std'] = svo_shift.std().item()
+            info['svo_shift_min'] = svo_shift.min().item()
+            info['svo_shift_max'] = svo_shift.max().item()
 
         if len(learner_states) > 0:
             info['learner_q_mean'] = learner_q.mean().item()

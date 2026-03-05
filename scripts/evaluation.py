@@ -14,13 +14,7 @@ from src.algorithms.iq_learner import IQLearnTrainer
 
 
 def load_model(model_path, env):
-    """
-    Load a model from either a .pt (IQ-Learn) or .zip (SB3) file.
-
-    Returns:
-        model: The loaded model object
-        model_type: 'iq_learn' or 'sb3'
-    """
+    """Load a model from either a .pt (IQ-Learn) or .zip (SB3) file."""
     if model_path.endswith('.pt'):
         state_dim = int(np.prod(env.observation_space.shape))
         action_dim = env.action_space.n
@@ -35,7 +29,6 @@ def load_model(model_path, env):
         trainer.load(model_path)
         return trainer, 'iq_learn'
     else:
-        # SB3 model (.zip)
         try:
             model = DQN.load(model_path)
         except Exception:
@@ -52,44 +45,15 @@ def predict_action(model, model_type, obs):
         return action
 
 
-def evaluate(args):
-    # Env setup
-    np.random.seed(args.seed)
-
-    config = ENV_CONFIG.copy()
-    config.update({
-        "render_agent": False,
-        "offscreen_rendering": True,
-    })
-
-    env = gym.make(config["id"], config=config)
-    env.unwrapped.configure(config)
-
-    svo_alpha_rad = np.deg2rad(args.svo_angle)
-    env = SVOPureWrapper(env, svo_alpha=svo_alpha_rad)
-
-    console = Console()
-
-    # Load model
-    try:
-        model, model_type = load_model(args.model_path, env)
-    except FileNotFoundError:
-        console.print(f"[red]Couldn't find model file at {args.model_path}[/red]")
-        return
-
-    model_label = "IQ-Learn" if model_type == 'iq_learn' else "SB3"
-    console.print(f"Loaded {model_label} model from {args.model_path}")
-    console.print(f"Starting evaluation over {args.episodes} episodes...")
-
-    # Metrics
+def run_seed(model, model_type, env, svo_alpha_rad, num_episodes, seed):
+    """
+    Run evaluation for a single seed. Returns a dict of per-seed aggregated metrics.
+    """
     results = {
         "rewards_total": [],
         "rewards_self": [],
         "rewards_global": [],
         "speeds": [],
-        "svo_episode": [],
-        "svo_success": [],
-        "svo_collision": [],
         "collisions": 0,
         "successes": 0,
         "overtakes": [],
@@ -99,9 +63,8 @@ def evaluate(args):
         "brake_checks": [],
     }
 
-    # Eval loop
-    for i in range(args.episodes):
-        obs, info = env.reset(seed=args.seed + i)
+    for i in range(num_episodes):
+        obs, info = env.reset(seed=seed + i)
 
         terminated = False
         truncated = False
@@ -153,9 +116,8 @@ def evaluate(args):
             for v in env.unwrapped.road.vehicles:
                 if v is ego_vehicle:
                     continue
-
                 if (v.lane_index[2] == ego_vehicle.lane_index[2] and
-                v.position[0] > ego_vehicle.position[0]):
+                        v.position[0] > ego_vehicle.position[0]):
                     distance = v.position[0] - ego_vehicle.position[0]
                     if distance < min_distance:
                         min_distance = distance
@@ -164,16 +126,13 @@ def evaluate(args):
             if lead_vehicle is not None:
                 distance = lead_vehicle.position[0] - ego_vehicle.position[0] - ego_length
                 time_headway = distance / (ego_vehicle.speed + 1e-6)
-
                 if time_headway < 1.0:
                     ep_tailgating_steps += 1
-
 
             # Brake check tracking
             dt = 1.0 / env.unwrapped.config["simulation_frequency"]
             accel = (ego_vehicle.speed - last_speed) / dt
 
-            # Find rear vehicle
             rear_vehicle = None
             min_rear_distance = float('inf')
 
@@ -223,16 +182,10 @@ def evaluate(args):
                     vehicles_in_front.add(v)
 
         # Episode aggregation
-        if ep_self != 0.0 or ep_global != 0.0:
-            svo_ep = np.degrees(np.arctan2(ep_global * np.cos(svo_alpha_rad), np.sin(svo_alpha_rad) * ep_self))
-        else:
-            svo_ep = 0.0
-
         results["rewards_total"].append(ep_reward)
         results["rewards_self"].append(ep_self)
         results["rewards_global"].append(ep_global)
         results["speeds"].append(np.mean(ep_speeds) if ep_speeds else 0.0)
-        results["svo_episode"].append(svo_ep)
         results["overtakes"].append(ep_overtakes)
         results["lane_changes"].append(ep_lane_changes)
         results["lane_preference"].append(
@@ -245,116 +198,157 @@ def evaluate(args):
 
         if ego_vehicle.crashed:
             results["collisions"] += 1
-            results["svo_collision"].append(svo_ep)
         else:
             results["successes"] += 1
-            results["svo_success"].append(svo_ep)
 
-        print(f"   Episode {i + 1}/{args.episodes} complete.", end="\r")
+    # Compute seed-level aggregates
+    n = num_episodes
+    return {
+        "collision_rate": 100 * results["collisions"] / n,
+        "success_rate": 100 * results["successes"] / n,
+        "avg_speed": np.mean(results["speeds"]),
+        "overtakes": np.mean(results["overtakes"]),
+        "lane_changes": np.mean(results["lane_changes"]),
+        "lane_preference": np.mean(results["lane_preference"]),
+        "tailgating_time": np.mean(results["tailgating_time"]),
+        "brake_checks": np.mean(results["brake_checks"]),
+        "reward_total": np.mean(results["rewards_total"]),
+        "r_self": np.mean(results["rewards_self"]),
+        "r_global": np.mean(results["rewards_global"]),
+        "global_self_ratio": (
+            np.mean(results["rewards_global"]) / np.mean(results["rewards_self"])
+            if np.mean(results["rewards_self"]) != 0 else 0.0
+        ),
+    }
+
+
+def evaluate(args):
+    config = ENV_CONFIG.copy()
+    config.update({
+        "render_agent": False,
+        "offscreen_rendering": True,
+    })
+
+    env = gym.make(config["id"], config=config)
+    env.unwrapped.configure(config)
+
+    svo_alpha_rad = np.deg2rad(args.svo_angle)
+    env = SVOPureWrapper(env, svo_alpha=svo_alpha_rad)
+
+    console = Console()
+
+    # Load model
+    try:
+        model, model_type = load_model(args.model_path, env)
+    except FileNotFoundError:
+        console.print(f"[red]Couldn't find model file at {args.model_path}[/red]")
+        return
+
+    model_label = "IQ-Learn" if model_type == 'iq_learn' else "SB3"
+
+    seeds = args.seeds
+    console.print(f"Loaded {model_label} model from {args.model_path}")
+    console.print(f"Evaluating over {len(seeds)} seeds × {args.episodes} episodes = {len(seeds) * args.episodes} total episodes")
+    console.print(f"Seeds: {seeds}\n")
+
+    # Run each seed
+    all_seed_results = []
+    for seed in seeds:
+        console.print(f"  Running seed {seed}...", end=" ")
+        seed_result = run_seed(model, model_type, env, svo_alpha_rad, args.episodes, seed)
+        all_seed_results.append(seed_result)
+        console.print(
+            f"collision={seed_result['collision_rate']:.0f}%  "
+            f"speed={seed_result['avg_speed']:.1f}km/h  "
+            f"reward={seed_result['reward_total']:.1f}"
+        )
+
     env.close()
 
-    # Aggregate statistics
-    n = args.episodes
-    collision_rate = 100 * results["collisions"] / n
-    success_rate = 100 * results["successes"] / n
+    # Aggregate across seeds
+    metrics = list(all_seed_results[0].keys())
+    agg = {}
+    for m in metrics:
+        values = [r[m] for r in all_seed_results]
+        agg[m] = {"mean": np.mean(values), "std": np.std(values), "values": values}
 
+    # Per-seed table
+    seed_table = Table(title=f"Per-Seed Results [{model_label}]")
+    seed_table.add_column("Seed", style="cyan")
+    seed_table.add_column("Collision %", style="magenta")
+    seed_table.add_column("Speed (km/h)", style="white")
+    seed_table.add_column("Reward", style="white")
+    seed_table.add_column("R_self", style="white")
+    seed_table.add_column("R_global", style="white")
+    seed_table.add_column("Tailgating %", style="white")
+    seed_table.add_column("Overtakes", style="white")
 
-    avg_self = np.mean(results["rewards_self"])
-    avg_global = np.mean(results["rewards_global"])
-    avg_svo_episode = np.mean(results["svo_episode"])
-
-    delta = ((avg_svo_episode - args.svo_angle + 180) % 360) - 180
-
-    # Build Table
-    table = Table(title=f"Evaluation: {args.svo_angle}° Agent [{model_label}] (Seed {args.seed})")
-
-    table.add_column("Metric", style="cyan", no_wrap=True)
-    table.add_column("Mean", style="magenta")
-    table.add_column("Std Dev", style="green")
-
-    table.add_section()
-    table.add_row("Collision Rate", f"{collision_rate:.1f}%", "-")
-    table.add_row("Success Rate", f"{success_rate:.1f}%", "-")
-    table.add_row("Avg Speed",
-                  f"{np.mean(results['speeds']):.2f} km/h",
-                  f"± {np.std(results['speeds']):.2f} km/h")
-
-    table.add_section()
-    table.add_row(
-        "Overtakes / Episode",
-        f"{np.mean(results['overtakes']):.2f}",
-        f"± {np.std(results['overtakes']):.2f}",
-    )
-    table.add_row(
-        "Lane Changes / Episode",
-        f"{np.mean(results['lane_changes']):.2f}",
-        f"± {np.std(results['lane_changes']):.2f}",
-    )
-    table.add_row(
-        "Lane Preference (0=Left,1=Right)",
-        f"{np.mean(results['lane_preference']):.2f}",
-        f"± {np.std(results['lane_preference']):.2f}",
-    )
-    table.add_row(
-        "Time Spent Tailgating (%)",
-        f"{np.mean(results['tailgating_time']):.2f}%",
-        f"± {np.std(results['tailgating_time']):.2f}%",
-    )
-    table.add_row(
-        "Brake Check Events / Episode",
-        f"{np.mean(results['brake_checks']):.2f}",
-        f"± {np.std(results['brake_checks']):.2f}",
-    )
-
-    table.add_section()
-    table.add_row(
-        "Total SVO Reward",
-        f"{np.mean(results['rewards_total']):.2f}",
-        f"± {np.std(results['rewards_total']):.2f}",
-    )
-    table.add_row(
-        "Self Utility (R_self)",
-        f"{avg_self:.2f}",
-        f"± {np.std(results['rewards_self']):.2f}",
-    )
-    table.add_row(
-        "Global Utility (R_global)",
-        f"{avg_global:.2f}",
-        f"± {np.std(results['rewards_global']):.2f}",
-    )
-
-    table.add_section()
-    table.add_row(
-        "Empirical SVO (episode avg)",
-        f"{avg_svo_episode:.2f}°",
-        f"Δ = {delta:+.1f}°",
-    )
-
-    if results["svo_success"]:
-        table.add_row(
-            "SVO (success only)",
-            f"{np.mean(results['svo_success']):.2f}°",
-            f"± {np.std(results['svo_success']):.2f}°",
+    for seed, r in zip(seeds, all_seed_results):
+        seed_table.add_row(
+            str(seed),
+            f"{r['collision_rate']:.1f}",
+            f"{r['avg_speed']:.1f}",
+            f"{r['reward_total']:.1f}",
+            f"{r['r_self']:.1f}",
+            f"{r['r_global']:.1f}",
+            f"{r['tailgating_time']:.1f}",
+            f"{r['overtakes']:.1f}",
         )
-    else:
-        table.add_row("SVO (success only)", "n/a", "-")
-
-    if results["svo_collision"]:
-        table.add_row(
-            "SVO (collision only)",
-            f"{np.mean(results['svo_collision']):.2f}°",
-            f"± {np.std(results['svo_collision']):.2f}°",
-        )
-    else:
-        table.add_row("SVO (collision only)", "n/a", "-")
 
     console.print("\n")
-    console.print(table)
+    console.print(seed_table)
 
-    if avg_self != 0:
-        console.print(
-            f"[italic]Global/Self Ratio: {avg_global / avg_self:.3f}[/italic]"
-        )
+    # Summary table
+    summary = Table(title=f"Aggregated: {len(seeds)} seeds × {args.episodes} ep [{model_label}]")
+    summary.add_column("Metric", style="cyan", no_wrap=True)
+    summary.add_column("Mean", style="magenta")
+    summary.add_column("± Std (across seeds)", style="green")
+
+    summary.add_section()
+    summary.add_row("Collision Rate",
+                    f"{agg['collision_rate']['mean']:.1f}%",
+                    f"± {agg['collision_rate']['std']:.1f}%")
+    summary.add_row("Success Rate",
+                    f"{agg['success_rate']['mean']:.1f}%",
+                    f"± {agg['success_rate']['std']:.1f}%")
+    summary.add_row("Avg Speed",
+                    f"{agg['avg_speed']['mean']:.1f} km/h",
+                    f"± {agg['avg_speed']['std']:.1f} km/h")
+
+    summary.add_section()
+    summary.add_row("Overtakes / Episode",
+                    f"{agg['overtakes']['mean']:.2f}",
+                    f"± {agg['overtakes']['std']:.2f}")
+    summary.add_row("Lane Changes / Episode",
+                    f"{agg['lane_changes']['mean']:.2f}",
+                    f"± {agg['lane_changes']['std']:.2f}")
+    summary.add_row("Lane Preference (0=L, 1=R)",
+                    f"{agg['lane_preference']['mean']:.2f}",
+                    f"± {agg['lane_preference']['std']:.2f}")
+    summary.add_row("Tailgating Time (%)",
+                    f"{agg['tailgating_time']['mean']:.1f}%",
+                    f"± {agg['tailgating_time']['std']:.1f}%")
+    summary.add_row("Brake Checks / Episode",
+                    f"{agg['brake_checks']['mean']:.2f}",
+                    f"± {agg['brake_checks']['std']:.2f}")
+
+    summary.add_section()
+    summary.add_row("Total Reward",
+                    f"{agg['reward_total']['mean']:.2f}",
+                    f"± {agg['reward_total']['std']:.2f}")
+    summary.add_row("Self Utility (R_self)",
+                    f"{agg['r_self']['mean']:.2f}",
+                    f"± {agg['r_self']['std']:.2f}")
+    summary.add_row("Global Utility (R_global)",
+                    f"{agg['r_global']['mean']:.2f}",
+                    f"± {agg['r_global']['std']:.2f}")
+    summary.add_row("Global/Self Ratio",
+                    f"{agg['global_self_ratio']['mean']:.3f}",
+                    f"± {agg['global_self_ratio']['std']:.3f}")
+
+    console.print("\n")
+    console.print(summary)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -362,10 +356,10 @@ if __name__ == "__main__":
                         help="Path to model (.pt for IQ-Learn, .zip for SB3)")
     parser.add_argument("--svo_angle", type=float, default=0.0,
                         help="SVO angle used for reward calculation")
-    parser.add_argument("--episodes", type=int, default=10,
-                        help="Number of episodes")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed")
+    parser.add_argument("--episodes", type=int, default=100,
+                        help="Number of episodes per seed")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42, 100, 200, 300, 400],
+                        help="Evaluation seeds (default: 42 100 200 300 400)")
 
     args = parser.parse_args()
     evaluate(args)

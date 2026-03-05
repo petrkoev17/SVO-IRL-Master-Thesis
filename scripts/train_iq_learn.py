@@ -293,8 +293,8 @@ def train_iq_learn(
         # Local log
         training_log['losses'].append(update_info['loss'])
         training_log['expert_q_means'].append(update_info['expert_q_mean'])
-        if 'svo_reward_mean' in update_info:
-            training_log['svo_reward_means'].append(update_info['svo_reward_mean'])
+        if 'svo_raw_mean' in update_info:
+            training_log['svo_reward_means'].append(update_info['svo_raw_mean'])
 
         # W&B
         if use_wandb:
@@ -307,15 +307,19 @@ def train_iq_learn(
             if 'learner_q_mean' in update_info:
                 log_dict['train/learner_q_mean'] = update_info['learner_q_mean']
                 log_dict['train/learner_v_mean'] = update_info['learner_next_v_mean']
-            if 'svo_reward_mean' in update_info:
-                log_dict['train/svo_reward_mean'] = update_info['svo_reward_mean']
+            if 'svo_raw_mean' in update_info:
+                log_dict['train/svo_raw_mean'] = update_info['svo_raw_mean']
+                log_dict['train/svo_raw_std'] = update_info['svo_raw_std']
+                log_dict['train/svo_shift_std'] = update_info['svo_shift_std']
+                log_dict['train/svo_shift_min'] = update_info['svo_shift_min']
+                log_dict['train/svo_shift_max'] = update_info['svo_shift_max']
             wandb.log(log_dict, step=update)
 
         # Progress bar
         if update % 10 == 0:
             desc = f"Loss: {update_info['loss']:.4f}  Expert Q: {update_info['expert_q_mean']:.3f}"
-            if 'svo_reward_mean' in update_info:
-                desc += f"  SVO R: {update_info['svo_reward_mean']:.3f}"
+            if 'svo_raw_mean' in update_info:
+                desc += f"  SVO raw: {update_info['svo_raw_mean']:.3f} shift:[{update_info['svo_shift_min']:.2f},{update_info['svo_shift_max']:.2f}]"
             pbar.set_description(desc)
 
         # Periodic evaluation
@@ -332,8 +336,9 @@ def train_iq_learn(
             print(f"  Collision rate: {eval_results['collision_rate']:.2%}")
             print(f"  Loss          : {update_info['loss']:.4f}")
             print(f"  Expert Q      : {update_info['expert_q_mean']:.3f}")
-            if 'svo_reward_mean' in update_info:
-                print(f"  SVO reward    : {update_info['svo_reward_mean']:.3f}")
+            if 'svo_raw_mean' in update_info:
+                print(f"  SVO raw       : {update_info['svo_raw_mean']:.3f} ± {update_info['svo_raw_std']:.3f}")
+                print(f"  SVO shift     : [{update_info['svo_shift_min']:.3f}, {update_info['svo_shift_max']:.3f}] std={update_info['svo_shift_std']:.3f}")
             print()
 
             if use_wandb:
@@ -351,7 +356,7 @@ def train_iq_learn(
             trainer.save(ckpt_path)
             if use_wandb:
                 import wandb
-                wandb.save(ckpt_path, base_path=output_dir)
+                wandb.save(ckpt_path)
 
     # ------------------------------------------------------------------
     # Final evaluation
@@ -395,8 +400,8 @@ def train_iq_learn(
 
     if use_wandb:
         import wandb
-        wandb.save(final_model_path, base_path=output_dir)
-        wandb.save(log_path, base_path=output_dir)
+        wandb.save(final_model_path)
+        wandb.save(log_path)
         wandb.log_artifact(final_model_path, name='iq_learn_final_model', type='model')
         wandb.finish()
 
