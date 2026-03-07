@@ -188,6 +188,9 @@ class IQLearnTrainer:
         self.losses = []
         self.expert_q_values = []
         self.learner_q_values = []
+        self.abs_q_values = []
+        self.svo_ratios = []
+        self.abs_svo_shifts = []
 
     def load_expert_demonstrations(self, demonstrations: List[List[Tuple]]):
         """
@@ -262,6 +265,9 @@ class IQLearnTrainer:
         expert_q = self.q_network(expert_states).gather(1, expert_actions.unsqueeze(1))
         expert_next_v = self.soft_value_function_target(expert_next_states)
 
+        # Discounted next-state value component
+        gamma_v_next = self.gamma * (1 - expert_dones.unsqueeze(1)) * expert_next_v
+
         # Learner Q-values
         if len(learner_states) > 0:
             learner_q = self.q_network(learner_states).gather(1, learner_actions.unsqueeze(1))
@@ -327,20 +333,31 @@ class IQLearnTrainer:
             loss = loss + self.gradient_penalty_weight * grad_penalty
 
         # ---- Logging info ----
+        abs_q_mean = expert_q.abs().mean().item()
+        abs_gamma_v_mean = gamma_v_next.abs().mean().item()
+
         info = {
             'loss': loss.item(),
             'expert_q_mean': expert_q.mean().item(),
             'expert_next_v_mean': expert_next_v.mean().item(),
             'grad_penalty': grad_penalty.item(),
+            'abs_expert_q_mean': abs_q_mean,
+            'abs_gamma_v_mean': abs_gamma_v_mean,
         }
 
         if self.use_svo:
+            abs_svo_shift_mean = svo_shift.abs().mean().item()
+            shift_to_q_ratio = abs_svo_shift_mean / (abs_q_mean + 1e-8) # Prevent division by 0
+
             info['svo_raw_mean'] = r_svo_raw.mean().item()
             info['svo_raw_std'] = r_svo_raw.std().item()
             info['svo_shift_mean'] = svo_shift.mean().item()
             info['svo_shift_std'] = svo_shift.std().item()
             info['svo_shift_min'] = svo_shift.min().item()
             info['svo_shift_max'] = svo_shift.max().item()
+
+            info['abs_svo_shift_mean'] = abs_svo_shift_mean
+            info['svo_shift_to_q_ratio'] = shift_to_q_ratio
 
         if len(learner_states) > 0:
             info['learner_q_mean'] = learner_q.mean().item()
@@ -401,8 +418,13 @@ class IQLearnTrainer:
         # Logging
         self.losses.append(info['loss'])
         self.expert_q_values.append(info['expert_q_mean'])
+        self.abs_q_values.append(info['abs_expert_q_mean'])
         if 'learner_q_mean' in info:
             self.learner_q_values.append(info['learner_q_mean'])
+
+        if self.use_svo and 'svo_shift_to_q_ratio' in info:
+            self.svo_ratios.append(info['svo_shift_to_q_ratio'])
+            self.abs_svo_shifts.append(info['abs_svo_shift_mean'])
 
         return info
 

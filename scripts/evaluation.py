@@ -10,6 +10,7 @@ from rich.table import Table
 
 from configs.env_config import ENV_CONFIG
 from src.envs.svo_pure_wrapper import SVOPureWrapper
+
 from src.algorithms.iq_learner import IQLearnTrainer
 
 

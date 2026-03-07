@@ -11,10 +11,8 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import CheckpointCallback
 from wandb.integration.sb3 import WandbCallback
 
-from configs.env_config import ENV_CONFIG
-from src.envs.svo_wrapper import SVOWrapper
-from src.envs.svo_pure_wrapper import SVOPureWrapper
-from src.envs.pure_wrapper import BaselineWrapper
+from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
 def make_env(rank: int, svo_alpha: float, seed: int = 42):
     """
@@ -37,7 +35,7 @@ def make_env(rank: int, svo_alpha: float, seed: int = 42):
 def train(args):
     # Convert SVO angle from degrees to radians
     svo_alpha_rad = np.deg2rad(args.svo_angle)
-    run_name = f"expert_svo_{args.svo_angle}deg_seed{args.seed}"
+    run_name = f"expert_svo_intersection_{args.svo_angle}deg_seed{args.seed}"
 
     print(f"Starting Training")
     print(f"Expert: {run_name}")

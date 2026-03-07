@@ -25,8 +25,8 @@ import torch
 
 from scripts.extract_demonstrations import extract_from_multiple_agents, load_demonstrations
 from scripts.train_iq_learn import train_iq_learn
-from src.envs.svo_pure_wrapper import SVOPureWrapper
-
+# from src.envs.svo_pure_wrapper import SVOPureWrapper
+from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians
@@ -193,7 +193,8 @@ def main():
 
     args = parser.parse_args()
 
-    from configs.env_config import ENV_CONFIG
+    # from configs.env_config import ENV_CONFIG
+    from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 

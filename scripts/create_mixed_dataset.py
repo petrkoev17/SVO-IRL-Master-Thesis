@@ -45,16 +45,19 @@ from scripts.extract_demonstrations import (
     combine_demonstrations,
     compute_stats_from_trajectories,
 )
-from src.envs.svo_pure_wrapper import SVOPureWrapper
-from configs.env_config import ENV_CONFIG
+# from src.envs.svo_pure_wrapper import SVOPureWrapper
+# from configs.env_config import ENV_CONFIG
 
+from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
-def create_env(svo_angle_deg: float):
+def create_env(svo_angle_deg: float, global_aggregation: str = 'mean'):
     """Create highway env with SVOPureWrapper at the given angle (degrees)."""
     svo_rad = np.deg2rad(svo_angle_deg)
     env = gym.make(ENV_CONFIG['id'])
     env.unwrapped.config.update(ENV_CONFIG)
-    env = SVOPureWrapper(env, svo_alpha=svo_rad, lamb=1.0)
+    env = SVOPureWrapper(env, svo_alpha=svo_rad, lamb=1.0,
+                         global_aggregation=global_aggregation)
     return env
 
 
@@ -64,6 +67,7 @@ def resolve_source(
     num_episodes: int,
     save_dir: str,
     deterministic: bool = True,
+    global_aggregation: str = 'mean',
 ) -> str:
     """
     Given a source path, return a path to a .pkl file with demonstrations.
@@ -85,16 +89,18 @@ def resolve_source(
 
         # Derive a name from the model path
         model_name = os.path.splitext(os.path.basename(source_path))[0]
-        pkl_name = f"{model_name}_svo{svo_angle_deg:.0f}deg_demonstrations.pkl"
+        agg_tag = f"_{global_aggregation}" if global_aggregation != 'mean' else ""
+        pkl_name = f"{model_name}_svo{svo_angle_deg:.0f}deg{agg_tag}_demonstrations.pkl"
         pkl_path = os.path.join(save_dir, pkl_name)
 
         print(f"\n{'='*60}")
         print(f"Extracting from model: {source_path}")
         print(f"SVO angle: {svo_angle_deg}°")
+        print(f"Global aggregation: {global_aggregation}")
         print(f"Episodes: {num_episodes}")
         print(f"{'='*60}")
 
-        env = create_env(svo_angle_deg)
+        env = create_env(svo_angle_deg, global_aggregation=global_aggregation)
         agent = DQN.load(source_path)
 
         trajectories, stats = extract_demonstrations_from_agent(
@@ -109,6 +115,7 @@ def resolve_source(
             'agent_path': source_path,
             'svo_angle_deg': svo_angle_deg,
             'deterministic': deterministic,
+            'global_aggregation': global_aggregation,
         }
         save_demonstrations(trajectories, stats, pkl_path, metadata)
         env.close()
@@ -158,6 +165,13 @@ def main():
         '--seed', type=int, default=42,
         help='Random seed.',
     )
+    parser.add_argument(
+        '--global-aggregation', type=str, default='mean',
+        choices=['mean', 'min'],
+        help='How to aggregate neighbor rewards into r_global.\n'
+             '  mean (default): Average of all neighbor rewards.\n'
+             '  min: Minimum neighbor reward — captures worst-affected vehicle.',
+    )
 
     args = parser.parse_args()
     np.random.seed(args.seed)
@@ -198,6 +212,7 @@ def main():
             svo_angle_deg=angle,
             num_episodes=args.num_episodes,
             save_dir=args.save_dir,
+            global_aggregation=args.global_aggregation,
         )
         pkl_paths.append(pkl_path)
 

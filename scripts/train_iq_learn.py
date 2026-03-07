@@ -26,7 +26,8 @@ from scripts.extract_demonstrations import (
 )
 
 from src.envs.svo_pure_wrapper import SVOPureWrapper
-
+from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+# from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
 def create_env(config: Dict, svo_angle: float = 0.0, render_mode: str = None):
     """
@@ -246,6 +247,10 @@ def train_iq_learn(
         'eval_rewards': [],
         'eval_collision_rates': [],
         'svo_reward_means': [],
+        'abs_expert_q_means': [],
+        'abs_gamma_v_means': [],
+        'abs_svo_shift_means': [],
+        'svo_shift_to_q_ratios': [],
     }
 
     # ------------------------------------------------------------------
@@ -293,8 +298,13 @@ def train_iq_learn(
         # Local log
         training_log['losses'].append(update_info['loss'])
         training_log['expert_q_means'].append(update_info['expert_q_mean'])
+        training_log['abs_expert_q_means'].append(update_info.get('abs_expert_q_mean', 0.0))
+        training_log['abs_gamma_v_means'].append(update_info.get('abs_gamma_v_mean', 0.0))
+
         if 'svo_raw_mean' in update_info:
             training_log['svo_reward_means'].append(update_info['svo_raw_mean'])
+            training_log['abs_svo_shift_means'].append(update_info.get('abs_svo_shift_mean', 0.0))
+            training_log['svo_shift_to_q_ratios'].append(update_info.get('svo_shift_to_q_ratio', 0.0))
 
         # W&B
         if use_wandb:
@@ -303,6 +313,8 @@ def train_iq_learn(
                 'train/loss':           update_info['loss'],
                 'train/expert_q_mean':  update_info['expert_q_mean'],
                 'train/expert_v_mean':  update_info['expert_next_v_mean'],
+                'train/abs_expert_q_mean': update_info.get('abs_expert_q_mean', 0.0),
+                'train/abs_gamma_v_mean':  update_info.get('abs_gamma_v_mean', 0.0),
             }
             if 'learner_q_mean' in update_info:
                 log_dict['train/learner_q_mean'] = update_info['learner_q_mean']
@@ -313,6 +325,8 @@ def train_iq_learn(
                 log_dict['train/svo_shift_std'] = update_info['svo_shift_std']
                 log_dict['train/svo_shift_min'] = update_info['svo_shift_min']
                 log_dict['train/svo_shift_max'] = update_info['svo_shift_max']
+                log_dict['train/abs_svo_shift_mean'] = update_info['abs_svo_shift_mean']
+                log_dict['train/svo_shift_to_q_ratio'] = update_info['svo_shift_to_q_ratio']
             wandb.log(log_dict, step=update)
 
         # Progress bar
@@ -320,6 +334,7 @@ def train_iq_learn(
             desc = f"Loss: {update_info['loss']:.4f}  Expert Q: {update_info['expert_q_mean']:.3f}"
             if 'svo_raw_mean' in update_info:
                 desc += f"  SVO raw: {update_info['svo_raw_mean']:.3f} shift:[{update_info['svo_shift_min']:.2f},{update_info['svo_shift_max']:.2f}]"
+                desc += f"  SVO Ratio: {update_info['svo_shift_to_q_ratio']:.3f}"
             pbar.set_description(desc)
 
         # Periodic evaluation
@@ -336,9 +351,18 @@ def train_iq_learn(
             print(f"  Collision rate: {eval_results['collision_rate']:.2%}")
             print(f"  Loss          : {update_info['loss']:.4f}")
             print(f"  Expert Q      : {update_info['expert_q_mean']:.3f}")
+
             if 'svo_raw_mean' in update_info:
                 print(f"  SVO raw       : {update_info['svo_raw_mean']:.3f} ± {update_info['svo_raw_std']:.3f}")
                 print(f"  SVO shift     : [{update_info['svo_shift_min']:.3f}, {update_info['svo_shift_max']:.3f}] std={update_info['svo_shift_std']:.3f}")
+                print(f"  Target Scales : γV(s') = {update_info['abs_gamma_v_mean']:.3f} | |Q| = {update_info['abs_expert_q_mean']:.3f}")
+                print(f"  SVO Impact    : |Shift| = {update_info['abs_svo_shift_mean']:.3f} | Ratio (|Shift|/|Q|) = {update_info['svo_shift_to_q_ratio']:.3f}")
+
+                # Warnings for scaling issues
+                if update_info['svo_shift_to_q_ratio'] > 1.0:
+                    print("  >> WARNING: SVO shift is larger than Q-values. Consider lowering svo_lambda.")
+                elif update_info['svo_shift_to_q_ratio'] < 0.001:
+                    print("  >> WARNING: SVO shift is negligible. Consider increasing svo_lambda.")
             print()
 
             if use_wandb:
@@ -356,7 +380,7 @@ def train_iq_learn(
             trainer.save(ckpt_path)
             if use_wandb:
                 import wandb
-                wandb.save(ckpt_path)
+                wandb.save(ckpt_path, base_path=output_dir)
 
     # ------------------------------------------------------------------
     # Final evaluation
@@ -400,8 +424,8 @@ def train_iq_learn(
 
     if use_wandb:
         import wandb
-        wandb.save(final_model_path)
-        wandb.save(log_path)
+        wandb.save(final_model_path, base_path=output_dir)
+        wandb.save(log_path, base_path=output_dir)
         wandb.log_artifact(final_model_path, name='iq_learn_final_model', type='model')
         wandb.finish()
 

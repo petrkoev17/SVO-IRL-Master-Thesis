@@ -10,12 +10,19 @@ class SVOPureWrapper(gym.Wrapper):
     R_self   -> Directly from env.step()
     R_global -> Calculated by "swapping" the ego vehicle with neighbors
                 and calling the environment's own reward function.
+
+    global_aggregation controls how individual neighbor rewards are combined:
+        'mean' (default): Average of all neighbor rewards.
+        'min': Minimum neighbor reward — captures the worst-affected neighbor,
+               amplifying the social signal when the ego harms even one vehicle.
     """
 
-    def __init__(self, env: gym.Env, svo_alpha: float = 0.0, lamb: float = 1.0):
+    def __init__(self, env: gym.Env, svo_alpha: float = 0.0, lamb: float = 1.0,
+                 global_aggregation: str = 'mean'):
         super().__init__(env)
         self.svo_alpha = svo_alpha
         self.lamb = lamb
+        self.global_aggregation = global_aggregation
 
         self.cos_alpha = np.cos(svo_alpha)
         self.sin_alpha = np.sin(svo_alpha)
@@ -31,16 +38,12 @@ class SVOPureWrapper(gym.Wrapper):
 
     def step(self, action):
         # 1. Get R_self (The True Environment Reward)
-        # We capture the reward returned by the base env immediately.
         obs, r_env, terminated, truncated, info = self.env.step(action)
 
         r_self = r_env
         self._last_r_self = r_self
 
-
         # 3. Calculate R_global using Context Swap
-        # We pass 'action' because the reward function signature requires it,
-        # but for neighbors, it mostly calculates state-based rewards (speed/pos).
         r_global = self._calculate_neighbourhood_reward(action)
         self._last_r_global = r_global
 
@@ -59,6 +62,7 @@ class SVOPureWrapper(gym.Wrapper):
     def _calculate_neighbourhood_reward(self, action):
         """
         Calculate neighbor rewards using highway-env's ACTUAL reward implementation.
+        Aggregation method is controlled by self.global_aggregation.
         """
         env = self.env.unwrapped
         original_ego = env.vehicle
@@ -75,7 +79,7 @@ class SVOPureWrapper(gym.Wrapper):
         if not neighbours:
             return 0.0
 
-        total_utility = 0.0
+        per_vehicle_rewards = []
 
         for vehicle in neighbours:
             # Get all side lanes for this vehicle's current position
@@ -132,6 +136,10 @@ class SVOPureWrapper(gym.Wrapper):
             # Multiply by on_road_reward (this is multiplicative, not additive!)
             reward *= on_road_reward
 
-            total_utility += reward
+            per_vehicle_rewards.append(reward)
 
-        return total_utility / len(neighbours)
+        # Aggregate
+        if self.global_aggregation == 'min':
+            return min(per_vehicle_rewards)
+        else:
+            return sum(per_vehicle_rewards) / len(per_vehicle_rewards)
