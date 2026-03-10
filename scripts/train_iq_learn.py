@@ -26,7 +26,9 @@ from scripts.extract_demonstrations import (
 )
 
 from src.envs.svo_pure_wrapper import SVOPureWrapper
-from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+from configs.env_config import ENV_CONFIG
+
+# from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
 # from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
 def create_env(config: Dict, svo_angle: float = 0.0, render_mode: str = None):
@@ -236,6 +238,13 @@ def train_iq_learn(
     )
 
     trainer.load_expert_demonstrations(expert_trajectories)
+
+    if collect_learner_data:
+        print("Prefilling learner with random exploration...")
+        trainer.collect_learner_rollout(
+            num_steps=2000,
+            epsilon=1.0
+        )
 
     # ------------------------------------------------------------------
     # Local training log
@@ -495,7 +504,6 @@ def main():
     device = ('cuda' if torch.cuda.is_available() else 'cpu') \
              if args.device == 'auto' else args.device
 
-    from configs.env_config import ENV_CONFIG
 
     train_iq_learn(
         env_config=ENV_CONFIG,

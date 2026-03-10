@@ -134,6 +134,7 @@ class IQLearnTrainer:
                  loss_type: str = 'v0',
                  regularize_weight: float = 1.0,
                  temperature: float = 1.0,
+                 learner_buffer_size = 5_000,
                  # Stabilization
                  gradient_penalty_weight: float = 0.1,
                  replay_ratio: float = 0.5,
@@ -182,7 +183,7 @@ class IQLearnTrainer:
 
         # Buffers
         self.expert_buffer = ReplayBuffer()
-        self.learner_buffer = ReplayBuffer()
+        self.learner_buffer = ReplayBuffer(capacity=learner_buffer_size)
 
         # Logging
         self.losses = []

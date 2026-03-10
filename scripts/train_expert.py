@@ -8,8 +8,9 @@ from highway_env.envs import HighwayEnv
 
 from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from wandb.integration.sb3 import WandbCallback
+
 
 from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
 from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
@@ -64,20 +65,26 @@ def train(args):
     ])
     env = VecMonitor(env, filename=None)
 
+    eval_env = SubprocVecEnv([
+        make_env(99, svo_alpha_rad, args.seed + 10000)
+    ])
+    eval_env = VecMonitor(eval_env, filename=None)
+
     # Save path
     save_path = os.path.join("data", "experts", run_name)
+    best_model_path = os.path.join(save_path, "best_model")
     os.makedirs(save_path, exist_ok=True)
 
     model = DQN('MlpPolicy', env,
                 policy_kwargs=dict(net_arch=[256, 256]),
                 learning_rate=5e-4,
                 buffer_size=15000,
-                learning_starts=200,
+                learning_starts=1000,
                 batch_size=32,
-                gamma=0.8,
+                gamma=0.95,
                 train_freq=1,
                 gradient_steps=1,
-                target_update_interval=50,
+                target_update_interval=500,
                 verbose=1,
                 tensorboard_log="highway_dqn/",
                 device="cuda")
@@ -97,11 +104,22 @@ def train(args):
         verbose=2,
     )
 
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=best_model_path,
+        log_path=save_path,
+        eval_freq=50000 // num_cpu,
+        deterministic=True,
+        render=False,
+        n_eval_episodes=100,
+        verbose=1,
+    )
+
     # Train Agent
     try:
         model.learn(
             total_timesteps=args.total_timesteps,
-            callback=[checkpoint_callback, wandb_callback],
+            callback=[checkpoint_callback, wandb_callback, eval_callback],
             progress_bar=True
         )
     except KeyboardInterrupt:
@@ -112,6 +130,8 @@ def train(args):
     model.save(final_model_path)
 
     wandb.save(f"{final_model_path}.zip")
+
+    wandb.save(os.path.join(best_model_path, "best_model.zip"))
 
     print(f"Training completed and model saved to {final_model_path}.zip.")
     env.close()

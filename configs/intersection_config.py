@@ -40,6 +40,7 @@ INTERSECTION_CONFIG = {
     },
 
     # Traffic
+    "other_vehicles_type": "src.vehicles.randomized_idm_vehicle.RandomizedIDMVehicle",
     "destination": "o1",
     "controlled_vehicles": 1,
     "initial_vehicle_count": 10,

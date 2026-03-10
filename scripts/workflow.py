@@ -28,6 +28,9 @@ from scripts.train_iq_learn import train_iq_learn
 # from src.envs.svo_pure_wrapper import SVOPureWrapper
 from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
+# from configs.env_config import ENV_CONFIG
+from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians
 # ---------------------------------------------------------------------------
@@ -176,8 +179,8 @@ def main():
     # Online Learner Rollouts
     # ------------------------------------------------------------------
     parser.add_argument('--collect-learner-data', action='store_true')
-    parser.add_argument('--learner-freq', type=int, default=1000)
-    parser.add_argument('--learner-steps', type=int, default=1000)
+    parser.add_argument('--learner-freq', type=int, default=10)
+    parser.add_argument('--learner-steps', type=int, default=50)
 
     # ------------------------------------------------------------------
     # Evaluation & Saving
@@ -193,8 +196,6 @@ def main():
 
     args = parser.parse_args()
 
-    # from configs.env_config import ENV_CONFIG
-    from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 

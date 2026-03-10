@@ -33,10 +33,17 @@ class RandomizedIDMVehicle(IDMVehicle):
     def _randomize_parameters(self):
         """Randomize all driving parameters"""
         # --- 1. Randomize Desired Speed (v0) ---
+
+        lane_speed_limit = self.lane.speed_limit
         self.target_speed = np.clip(
-            np.random.normal(loc=27.0, scale=2.5),
-            20.0, 35.0
+            np.random.normal(loc=lane_speed_limit * 0.9, scale=lane_speed_limit * 0.1),
+            lane_speed_limit * 0.5, lane_speed_limit * 1.1
         )
+
+        # self.target_speed = np.clip(
+        #     np.random.normal(loc=27.0, scale=2.5),
+        #     20.0, 35.0
+        # )
 
         # --- 2. Randomize Aggressiveness (Time Headway T) ---
         self.TIME_WANTED = np.random.lognormal(mean=0.2, sigma=0.3)
