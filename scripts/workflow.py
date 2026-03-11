@@ -28,9 +28,6 @@ from scripts.train_iq_learn import train_iq_learn
 # from src.envs.svo_pure_wrapper import SVOPureWrapper
 from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
 
-# from configs.env_config import ENV_CONFIG
-from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
-
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians
 # ---------------------------------------------------------------------------
@@ -68,8 +65,7 @@ def parse_svo_angle(value: str) -> float:
             )
 
     try:
-        radians = float(value)
-        return radians
+        return float(value)
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"'{value}' is not a valid SVO angle. "
@@ -79,10 +75,6 @@ def parse_svo_angle(value: str) -> float:
 
 
 def create_env_fn(env_config, svo_alpha: float):
-    """
-    Return a zero-argument factory that creates the environment with the
-    given SVO angle (in radians) baked in.
-    """
     def _create():
         env = gym.make(env_config['id'])
         env.unwrapped.config.update(env_config)
@@ -127,7 +119,8 @@ def main():
         ),
     )
     parser.add_argument('--num-episodes', type=int, default=100)
-    parser.add_argument('--demo-save-dir', type=str, default='./expert_demonstrations')
+    parser.add_argument('--demo-save-dir', type=str,
+                        default='./expert_demonstrations')
 
     # ------------------------------------------------------------------
     # Training arguments
@@ -141,23 +134,31 @@ def main():
     # ------------------------------------------------------------------
     # IQ-Learn specific
     # ------------------------------------------------------------------
-    parser.add_argument('--loss-type', type=str, default='v0', choices=['v0', 'v1'])
+    parser.add_argument('--loss-type', type=str, default='v0',
+                        choices=['v0', 'v1'])
     parser.add_argument('--temperature', type=float, default=1.0)
 
     # ------------------------------------------------------------------
     # SVO regularization
     # ------------------------------------------------------------------
     parser.add_argument('--svo-regularize', action='store_true',
-                        help='Enable SVO regularization of the IQ-Learn objective.')
+                        help='Enable SVO regularization of IQ-Learn.')
+    parser.add_argument('--svo-mode', type=str, default='reward_reg',
+                        choices=['bellman', 'reward_reg', 'reweight', 'reward_reg_reweight'],
+                        help='SVO integration mode:\n'
+                             '  bellman              – shift Bellman target (original)\n'
+                             '  reward_reg           – separate MSE on recovered reward\n'
+                             '  reweight             – importance-weight expert sampling\n'
+                             '  reward_reg_reweight  – both reward_reg + reweight combined')
     parser.add_argument('--svo-alpha-target', type=parse_svo_angle, default=0.0,
                         metavar='RADIANS|deg:X|NAME',
-                        help='Target SVO angle for regularization (radians). '
-                             'Only used when --svo-regularize is set.')
+                        help='Target SVO angle for regularization (radians).')
     parser.add_argument('--svo-lambda', type=float, default=1.0,
-                        help='SVO regularization strength λ. '
-                             'Only used when --svo-regularize is set.')
+                        help='SVO regularization strength λ.')
     parser.add_argument('--normalize-svo', action='store_true',
-                        help='Batch-normalize R_SVO to zero mean / unit variance.')
+                        help='Batch-normalize R_SVO to zero mean / unit var.')
+    parser.add_argument('--svo-reweight-temp', type=float, default=1.0,
+                        help='Temperature for reweight mode softmax.')
 
     # ------------------------------------------------------------------
     # W&B
@@ -172,7 +173,8 @@ def main():
     # ------------------------------------------------------------------
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--tau', type=float, default=0.005)
-    parser.add_argument('--method', type=str, default='value', choices=['value', 'q'])
+    parser.add_argument('--method', type=str, default='value',
+                        choices=['value', 'q'])
     parser.add_argument('--regularize-weight', type=float, default=1.0)
 
     # ------------------------------------------------------------------
@@ -196,6 +198,8 @@ def main():
 
     args = parser.parse_args()
 
+    # from configs.env_config import ENV_CONFIG
+    from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -204,7 +208,10 @@ def main():
     if args.svo_regularize:
         print(f"SVO target (regularizer): {args.svo_alpha_target:.6f} rad  "
               f"({math.degrees(args.svo_alpha_target):.2f} deg)")
+        print(f"SVO mode                : {args.svo_mode}")
         print(f"SVO λ                   : {args.svo_lambda}")
+        if args.svo_mode == 'reweight':
+            print(f"Reweight temperature    : {args.svo_reweight_temp}")
 
     # ==================== EXTRACTION ====================
     if args.mode in ['extract', 'both']:
@@ -240,13 +247,14 @@ def main():
 
         if args.demo_path is None:
             raise ValueError(
-                "--demo-path is required for training (or use --mode both)"
-            )
+                "--demo-path is required for training (or use --mode both)")
 
         if args.output_dir is None:
             svo_label = ""
             if args.svo_regularize:
-                svo_label = f"_svo{math.degrees(args.svo_alpha_target):.0f}deg_lam{args.svo_lambda}"
+                svo_label = (f"_svo{math.degrees(args.svo_alpha_target):.0f}deg"
+                             f"_{args.svo_mode}"
+                             f"_lam{args.svo_lambda}")
             args.output_dir = (
                 f'./iq_learn_runs/run_{args.agent_name}{svo_label}_{timestamp}'
             )
@@ -268,9 +276,11 @@ def main():
             regularize_weight=args.regularize_weight,
             # SVO
             use_svo=args.svo_regularize,
+            svo_mode=args.svo_mode,
             svo_alpha=args.svo_alpha_target,
             svo_lambda=args.svo_lambda,
             normalize_svo=args.normalize_svo,
+            svo_reweight_temp=args.svo_reweight_temp,
             # Training
             collect_learner_data=args.collect_learner_data,
             learner_collection_freq=args.learner_freq,
