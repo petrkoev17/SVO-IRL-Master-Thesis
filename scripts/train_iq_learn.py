@@ -153,7 +153,7 @@ def train_iq_learn(
         'svo_alpha_deg': float(np.degrees(svo_alpha)) if use_svo else None,
         'svo_lambda': svo_lambda if use_svo else None,
         'normalize_svo': normalize_svo if use_svo else None,
-        'svo_reweight_temp': svo_reweight_temp if (use_svo and svo_mode == 'reweight') else None,
+        'svo_reweight_temp': svo_reweight_temp if (use_svo and svo_mode in ('reweight', 'reward_reg_reweight')) else None,
         # Flatten env config
         **{f'env/{k}': v for k, v in env_config.items()
            if not isinstance(v, dict)},
@@ -187,6 +187,7 @@ def train_iq_learn(
         'bellman': 'Bellman-shift',
         'reward_reg': 'Reward-regularized',
         'reweight': 'Reweight-sampling',
+        'reward_reg_reweight': 'Reward-reg + Reweight',
     }
     header = (f"SVO-IQ ({mode_label.get(svo_mode, svo_mode)})"
               if use_svo else "IQ-Learn (Baseline)")
@@ -202,7 +203,7 @@ def train_iq_learn(
         print(f"SVO α_target     : {np.degrees(svo_alpha):.1f}° ({svo_alpha:.4f} rad)")
         print(f"SVO λ            : {svo_lambda}")
         print(f"SVO normalize    : {normalize_svo}")
-        if svo_mode == 'reweight':
+        if svo_mode in ('reweight', 'reward_reg_reweight'):
             print(f"Reweight temp    : {svo_reweight_temp}")
 
     env = create_env(env_config, svo_angle=0.0)
