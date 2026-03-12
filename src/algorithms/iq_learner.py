@@ -1,24 +1,37 @@
 """
-IQ-Learn implementation based on "IQ-Learn: Inverse soft-Q Learning for Imitation" (Garg et al., 2021)
+IQ-Learn implementation based on "IQ-Learn: Inverse soft-Q Learning for Imitation"
+(Garg et al., 2021).
 
-Supports optional SVO regularization with three modes:
+This version faithfully reproduces the original IQ-Learn loss from Garg et al.'s
+reference implementation, adapted for discrete-action DQN.  The original uses a
+continuous-action SAC agent; here we replace the actor with ε-greedy action
+selection and derive V(s) = τ · logsumexp(Q(s,·)/τ) from the discrete Q-network.
 
-    'bellman'    – (Original) Shift the Bellman target by λ·R_SVO.
-                   Pros: simple.  Cons: SVO and γV(s') compete on different
-                   scales; the ratio drifts during training.
+Key corrections vs. the previous (incorrect) version:
+  1. The implicit reward is correctly defined as  r̂ = Q(s,a) − γ(1−d)V(s').
+  2. The first loss term applies f-divergence weighting (φ_grad) to expert
+     transitions' implicit reward, matching the original's divergence options.
+  3. The second loss term uses the correct sampling strategies:
+       'value'        – E_{ρ_expert ∪ ρ_policy}[V(s) − γV(s')]   (online, DEFAULT)
+       'value_expert' – E_{ρ_expert}[V(s) − γV(s')]              (offline)
+       'v0'           – (1−γ) · E_{s_0}[V(s_0)]                  (offline, usually suboptimal)
+  4. χ² divergence regularisation is supported (enabled by default):
+       adds  1/(4α) · E[r̂²]  on expert or all data depending on mode.
+  5. All f-divergences from the original are supported:
+       'chi'     – χ² (recommended, adds separate regularisation term)
+       'kl'      – KL (original dual, sub-optimal)
+       'kl2'     – KL (biased dual)
+       'kl_fix'  – KL (unbiased fix proposed by authors)
+       'js'      – Jensen–Shannon
+       'hellinger' – Hellinger
+       None/'none' – standard (φ_grad = 1)
 
-    'reward_reg' – (Recommended) Add a separate MSE loss that pushes the
-                   *recovered* reward  r̂(s,a) = Q(s,a) − γV(s')  toward
-                   λ·R_SVO.  The IQ-Learn objective stays structurally
-                   intact; the SVO term acts as a soft prior on reward shape.
+Supports optional SVO regularisation with three modes:
+    'bellman'    – Shift the Bellman target by λ·R_SVO.
+    'reward_reg' – Separate MSE loss pushing recovered reward toward λ·R_SVO.
+    'reweight'   – Importance-weight expert sampling by R_SVO.
 
-    'reweight'   – Use R_SVO to importance-weight expert transitions during
-                   sampling.  High-SVO-alignment transitions are sampled more
-                   often; adversarial ones are down-weighted.  The loss itself
-                   is untouched.
-
-When use_svo=False (default), behaviour is identical to standard IQ-Learn
-regardless of svo_mode.
+When use_svo=False (default), behaviour is identical to standard IQ-Learn.
 """
 
 import torch
@@ -41,9 +54,9 @@ class ReplayBuffer:
     Each transition stores:
         (state, action, reward, next_state, done, r_self, r_global)
 
-    r_self and r_global are the raw SVO reward components. They are always
-    stored (defaulting to 0.0 when unavailable) so the buffer format is
-    uniform regardless of whether SVO regularization is active.
+    r_self and r_global are the raw SVO reward components.  They always
+    default to 0.0 so the buffer format is uniform regardless of whether
+    SVO regularisation is active.
     """
 
     def __init__(self, capacity: int = 100000):
@@ -58,9 +71,9 @@ class ReplayBuffer:
         Add entire trajectory to the buffer.
 
         Supported tuple formats:
-            5-element: (s, a, r, s', done)                              — minimal
-            6-element: (s, a, r, s', done, crashed)                     — legacy
-            8-element: (s, a, r, s', done, crashed, r_self, r_global)   — current
+            5-element: (s, a, r, s', done)
+            6-element: (s, a, r, s', done, crashed)
+            8-element: (s, a, r, s', done, crashed, r_self, r_global)
         """
         for transition in trajectory:
             n = len(transition)
@@ -81,32 +94,16 @@ class ReplayBuffer:
                     transition[3], transition[4],
                 )
 
-    # ------------------------------------------------------------------
-    # Uniform sampling (default)
-    # ------------------------------------------------------------------
     def sample(self, batch_size: int):
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         return self._gather(indices)
 
-    # ------------------------------------------------------------------
-    # SVO-weighted sampling  (used by svo_mode='reweight')
-    # ------------------------------------------------------------------
     def sample_weighted(self, batch_size: int, weights: np.ndarray):
-        """
-        Sample with pre-computed per-transition importance weights.
-
-        Args:
-            weights: 1-D array of length len(self.buffer). Need NOT sum to 1;
-                     will be normalised internally.
-        """
         probs = weights / weights.sum()
         indices = np.random.choice(len(self.buffer), batch_size,
                                    replace=True, p=probs)
         return self._gather(indices)
 
-    # ------------------------------------------------------------------
-    # Internal helper
-    # ------------------------------------------------------------------
     def _gather(self, indices):
         batch = [self.buffer[idx] for idx in indices]
 
@@ -129,7 +126,7 @@ class ReplayBuffer:
 # ======================================================================
 
 class DQNNetwork(nn.Module):
-    """Q-Network"""
+    """Standard MLP Q-Network for discrete actions."""
 
     def __init__(self, state_dim: int, action_dim: int,
                  hidden_dims: List[int] = [256, 256]):
@@ -155,15 +152,37 @@ class DQNNetwork(nn.Module):
 
 class IQLearnTrainer:
     """
-    IQ-Learn Trainer for learning from expert demonstrations.
+    IQ-Learn Trainer for discrete-action environments.
+
+    Faithfully implements the IQ-Learn objective from Garg et al. (2021)
+    using a DQN backbone.  The soft value function is derived analytically:
+
+        V(s) = τ · logsumexp( Q(s, ·) / τ )
+
+    Loss sampling strategies:
+        'value'        – online:  E_{all}[ V(s) − γV(s') ]
+        'value_expert' – offline: E_{expert}[ V(s) − γV(s') ]  (was Q in orig; see note)
+        'v0'           – offline: (1−γ) · E_{s0}[ V(s0) ]
+
+    f-divergence options:
+        'chi'      – χ² divergence (recommended; adds regularisation term)
+        'kl'       – KL (original sub-optimal dual)
+        'kl2'      – KL (biased dual)
+        'kl_fix'   – KL (unbiased fix)
+        'js'       – Jensen–Shannon
+        'hellinger'– Hellinger
+        'none'     – standard (no reweighting, φ_grad = 1)
 
     SVO modes (only active when use_svo=True):
-        'bellman'     – shift Bellman target by λ·R_SVO  (original)
-        'reward_reg'  – separate MSE loss on recovered reward vs λ·R_SVO
-        'reweight'    – importance-weight expert sampling by R_SVO
+        'bellman'            – shift Bellman target by λ·R_SVO
+        'reward_reg'         – separate MSE on recovered reward vs λ·R_SVO
+        'reweight'           – importance-weight expert sampling by R_SVO
+        'reward_reg_reweight'– both reward_reg + reweight
     """
 
     VALID_SVO_MODES = ('bellman', 'reward_reg', 'reweight', 'reward_reg_reweight')
+    VALID_DIVERGENCES = ('none', 'chi', 'kl', 'kl2', 'kl_fix', 'js', 'hellinger')
+    VALID_LOSS_TYPES = ('value', 'value_expert', 'v0')
 
     def __init__(self,
                  env: gym.Env,
@@ -175,35 +194,57 @@ class IQLearnTrainer:
                  tau: float = 0.005,
                  device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
                  # IQ-Learn core
-                 method: str = 'value',
-                 loss_type: str = 'v0',
-                 regularize_weight: float = 1.0,
+                 loss_type: str = 'value',
+                 divergence: str = 'chi',
+                 div_alpha: float = 0.5,
                  temperature: float = 1.0,
+                 use_target_network: bool = True,
                  learner_buffer_size: int = 5_000,
-                 # Stabilization
-                 gradient_penalty_weight: float = 0.1,
+                 # Gradient penalty (Wasserstein-1 style, optional)
+                 grad_pen: bool = False,
+                 lambda_gp: float = 10.0,
+                 # Replay
                  replay_ratio: float = 0.5,
-                 # SVO regularization
+                 # SVO regularisation
                  use_svo: bool = False,
                  svo_mode: str = 'reward_reg',
                  svo_alpha: float = 0.0,
                  svo_lambda: float = 1.0,
                  normalize_svo: bool = False,
-                 # Reweight parameters
                  svo_reweight_temp: float = 1.0,
-    ):
+                 # Legacy compatibility (ignored but accepted)
+                 method: str = 'value',
+                 regularize_weight: float = 1.0,
+                 gradient_penalty_weight: float = 0.1,
+                 ):
         self.env = env
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.gamma = gamma
         self.tau = tau
         self.device = device
-        self.method = method
+
+        # --- IQ-Learn core config ---
         self.loss_type = loss_type
-        self.regularize_weight = regularize_weight
+        self.divergence = divergence
+        self.div_alpha = div_alpha
         self.temperature = temperature
-        self.gradient_penalty_weight = gradient_penalty_weight
+        self.use_target_network = use_target_network
         self.replay_ratio = replay_ratio
+        self.grad_pen = grad_pen
+        self.lambda_gp = lambda_gp
+
+        # Validate
+        if self.loss_type not in self.VALID_LOSS_TYPES:
+            raise ValueError(
+                f"Invalid loss_type='{loss_type}'. "
+                f"Must be one of {self.VALID_LOSS_TYPES}"
+            )
+        if self.divergence not in self.VALID_DIVERGENCES:
+            raise ValueError(
+                f"Invalid divergence='{divergence}'. "
+                f"Must be one of {self.VALID_DIVERGENCES}"
+            )
 
         # --- SVO config ---
         self.use_svo = use_svo
@@ -214,8 +255,6 @@ class IQLearnTrainer:
         self.sin_alpha = np.sin(svo_alpha)
         self.normalize_svo = normalize_svo
         self.svo_reweight_temp = svo_reweight_temp
-
-        # Precomputed importance weights for 'reweight' mode (set after loading demos)
         self._expert_svo_weights: Optional[np.ndarray] = None
 
         if self.use_svo:
@@ -224,29 +263,36 @@ class IQLearnTrainer:
                     f"Invalid svo_mode='{svo_mode}'. "
                     f"Must be one of {self.VALID_SVO_MODES}"
                 )
-            print(f"[SVO-IQ] SVO regularization ENABLED")
+            print(f"[SVO-IQ] SVO regularisation ENABLED")
             print(f"[SVO-IQ]   mode       = {svo_mode}")
             print(f"[SVO-IQ]   α_target   = {np.degrees(svo_alpha):.1f}°  ({svo_alpha:.4f} rad)")
             print(f"[SVO-IQ]   λ          = {svo_lambda}")
-            print(f"[SVO-IQ]   normalize  = {normalize_svo}")
-            if svo_mode == 'reweight':
+            print(f"[SVO-IQ]   normalise  = {normalize_svo}")
+            if svo_mode in ('reweight', 'reward_reg_reweight'):
                 print(f"[SVO-IQ]   reweight τ = {svo_reweight_temp}")
         else:
-            print(f"[IQ-Learn] Standard IQ-Learn (no SVO regularization)")
+            print(f"[IQ-Learn] Standard IQ-Learn (no SVO regularisation)")
+
+        print(f"[IQ-Learn] loss_type   = {self.loss_type}")
+        print(f"[IQ-Learn] divergence  = {self.divergence}")
+        if self.divergence == 'chi':
+            print(f"[IQ-Learn] div_alpha   = {self.div_alpha}")
+        print(f"[IQ-Learn] temperature = {self.temperature}")
+        print(f"[IQ-Learn] use_target  = {self.use_target_network}")
 
         # Q-networks
         self.q_network = DQNNetwork(state_dim, action_dim, hidden_dims).to(device)
         self.q_target  = DQNNetwork(state_dim, action_dim, hidden_dims).to(device)
         self.q_target.load_state_dict(self.q_network.state_dict())
 
-        # Optimizer
+        # Optimiser
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=lr)
 
         # Buffers
         self.expert_buffer  = ReplayBuffer()
         self.learner_buffer = ReplayBuffer(capacity=learner_buffer_size)
 
-        # Logging
+        # Logging lists
         self.losses           = []
         self.expert_q_values  = []
         self.learner_q_values = []
@@ -268,7 +314,7 @@ class IQLearnTrainer:
 
         if self.use_svo and not has_svo:
             print(
-                "[SVO-IQ] WARNING: SVO regularization is enabled but "
+                "[SVO-IQ] WARNING: SVO regularisation is enabled but "
                 "demonstrations do not contain r_self / r_global. "
                 "SVO reward shaping will use zeros (no effect)."
             )
@@ -277,30 +323,19 @@ class IQLearnTrainer:
             self.expert_buffer.add_trajectory(traj)
         print(f"Expert buffer size: {len(self.expert_buffer)}")
 
-        # Pre-compute importance weights for reweight modes
         if self.use_svo and self.svo_mode in ('reweight', 'reward_reg_reweight'):
             self._compute_expert_weights()
 
     def _compute_expert_weights(self):
-        """
-        Compute per-transition importance weights from R_SVO.
-
-        w_i = softmax( R_SVO_i / τ )
-
-        Higher-alignment transitions get higher weight.  Temperature τ
-        controls how peaked the distribution is:
-            τ → 0  :  hard selection (only the best transitions)
-            τ → ∞  :  uniform (no effect)
-        """
+        """Compute per-transition importance weights from R_SVO."""
         n = len(self.expert_buffer)
         svo_vals = np.empty(n, dtype=np.float32)
 
         for i, (_, _, _, _, _, r_self, r_global) in enumerate(self.expert_buffer.buffer):
             svo_vals[i] = self.cos_alpha * r_self + self.sin_alpha * r_global
 
-        # Softmax with temperature
         logits = svo_vals / (self.svo_reweight_temp + 1e-8)
-        logits -= logits.max()  # numerical stability
+        logits -= logits.max()
         weights = np.exp(logits)
         weights /= weights.sum()
 
@@ -316,27 +351,29 @@ class IQLearnTrainer:
 
     def _compute_svo_reward(self, r_selfs: torch.Tensor,
                             r_globals: torch.Tensor) -> torch.Tensor:
-        """R_SVO = cos(α) · r_self + sin(α) · r_global   →  [batch, 1]"""
+        """R_SVO = cos(α) · r_self + sin(α) · r_global  →  [batch, 1]"""
         r_svo = self.cos_alpha * r_selfs + self.sin_alpha * r_globals
         return r_svo.unsqueeze(1)
 
     # ==================================================================
-    # Value functions
+    # Value functions  (discrete-action soft-V from Q)
     # ==================================================================
 
-    def soft_value_function(self, states: torch.Tensor) -> torch.Tensor:
+    def getV(self, states: torch.Tensor) -> torch.Tensor:
+        """V(s) = τ · logsumexp(Q(s,·)/τ)  using ONLINE network."""
         q_values = self.q_network(states)
         return self.temperature * torch.logsumexp(
             q_values / self.temperature, dim=1, keepdim=True)
 
-    def soft_value_function_target(self, states: torch.Tensor) -> torch.Tensor:
+    def get_targetV(self, states: torch.Tensor) -> torch.Tensor:
+        """V(s) using TARGET network (no grad)."""
         with torch.no_grad():
             q_values = self.q_target(states)
             return self.temperature * torch.logsumexp(
                 q_values / self.temperature, dim=1, keepdim=True)
 
     # ==================================================================
-    # Loss computation
+    # Core IQ-Learn loss  (faithful to Garg et al. reference code)
     # ==================================================================
 
     def compute_iq_loss(self,
@@ -347,32 +384,67 @@ class IQLearnTrainer:
                         learner_next_states, learner_dones,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Compute IQ-Learn loss, optionally with SVO regularization.
+        Compute the full IQ-Learn loss.
 
-        The SVO integration point depends on self.svo_mode:
-            'bellman'    – target = λ·R_SVO + γ(1-d)V(s')
-            'reward_reg' – target = γ(1-d)V(s'),  plus separate L_svo
-            'reweight'   – target = γ(1-d)V(s')  (sampling already biased)
+        Matches the structure of iq_loss() from the original codebase:
+            Term 1:  -E_{expert}[ φ'(r̂) · r̂ ]          where r̂ = Q − γ(1-d)V(s')
+            Term 2:  depends on loss_type (value / value_expert / v0)
+            Term 3:  χ² regularisation if divergence == 'chi'
+            Optional: gradient penalty, SVO regularisation
         """
+        has_learner = len(learner_states) > 0
 
-        # ---- Expert Q and V ----
-        expert_q      = self.q_network(expert_states).gather(
-                            1, expert_actions.unsqueeze(1))
-        expert_next_v = self.soft_value_function_target(expert_next_states)
-        gamma_v_next  = self.gamma * (1 - expert_dones.unsqueeze(1)) * expert_next_v
-
-        # ---- Learner Q and V ----
-        if len(learner_states) > 0:
-            learner_q      = self.q_network(learner_states).gather(
-                                1, learner_actions.unsqueeze(1))
-            learner_next_v = self.soft_value_function_target(learner_next_states)
+        # ------------------------------------------------------------------
+        # Concatenate expert + learner into a single batch (as original does)
+        # ------------------------------------------------------------------
+        if has_learner:
+            all_states      = torch.cat([expert_states, learner_states], dim=0)
+            all_actions     = torch.cat([expert_actions, learner_actions], dim=0)
+            all_next_states = torch.cat([expert_next_states, learner_next_states], dim=0)
+            all_dones       = torch.cat([expert_dones, learner_dones], dim=0)
         else:
-            learner_q      = torch.zeros_like(expert_q)
-            learner_next_v = torch.zeros_like(expert_next_v)
+            all_states      = expert_states
+            all_actions     = expert_actions
+            all_next_states = expert_next_states
+            all_dones       = expert_dones
 
-        # ---- Compute SVO terms (needed for bellman, reward_reg, reward_reg_reweight) ----
-        svo_shift = 0.0          # scalar zero — broadcasts cleanly
-        r_svo_raw = None         # for logging
+        n_expert  = expert_states.shape[0]
+        n_total   = all_states.shape[0]
+
+        # is_expert mask: True for expert transitions, False for learner
+        is_expert = torch.zeros(n_total, 1, device=self.device, dtype=torch.bool)
+        is_expert[:n_expert] = True
+
+        # ------------------------------------------------------------------
+        # Q(s,a) for all transitions
+        # ------------------------------------------------------------------
+        current_Q = self.q_network(all_states).gather(
+            1, all_actions.unsqueeze(1))  # [N, 1]
+
+        # ------------------------------------------------------------------
+        # V(s) and V(s') for all transitions
+        # ------------------------------------------------------------------
+        current_V = self.getV(all_states)  # [N, 1]
+
+        if self.use_target_network:
+            next_V = self.get_targetV(all_next_states)  # [N, 1]
+        else:
+            next_V = self.getV(all_next_states)
+
+        # ------------------------------------------------------------------
+        # Implicit reward:  r̂ = Q(s,a) − γ(1-d)V(s')
+        # ------------------------------------------------------------------
+        y = (1 - all_dones.unsqueeze(1)) * self.gamma * next_V
+        reward = current_Q - y  # [N, 1]
+
+        # Expert-only reward (for Term 1 and χ² on expert data)
+        expert_reward = reward[is_expert.squeeze(1)]  # [n_expert, 1]
+
+        # ------------------------------------------------------------------
+        # SVO: optionally shift the Bellman target for expert transitions
+        # ------------------------------------------------------------------
+        svo_shift = 0.0
+        r_svo_raw = None
 
         if self.use_svo and self.svo_mode in ('bellman', 'reward_reg', 'reward_reg_reweight'):
             r_svo_raw = self._compute_svo_reward(
@@ -387,72 +459,137 @@ class IQLearnTrainer:
 
             svo_shift = self.svo_lambda * r_svo
 
-        # ---- IQ-Learn loss (v0 / v1) ----
-        if self.loss_type == 'v0':
+        if self.use_svo and self.svo_mode == 'bellman':
+            # In bellman mode, the expert reward is shifted:
+            # r̂_svo = Q(s,a) − (γV(s') + λ·R_SVO)
+            # But since expert_reward = Q − γV(s'), we subtract svo_shift:
+            # Actually, the *target* is shifted UP, so the implicit reward goes DOWN.
+            # Original formulation: target = svo_shift + γV(s')
+            # So: r̂_bellman = Q(s,a) − svo_shift − γV(s') = expert_reward − svo_shift
+            expert_reward = expert_reward - svo_shift
 
-            # Bellman mode: shift the target
-            if self.use_svo and self.svo_mode == 'bellman':
-                expert_target = svo_shift + gamma_v_next
+        # ------------------------------------------------------------------
+        # Track v0 for logging  (value of initial states ≈ value of expert states)
+        # ------------------------------------------------------------------
+        v0 = current_V[is_expert.squeeze(1)].mean()
+
+        loss_dict = {}
+        loss_dict['v0'] = v0.item()
+
+        # ==================================================================
+        # TERM 1:  -E_{expert}[ φ'(r̂) · r̂ ]
+        #
+        # φ'(r̂) depends on the chosen f-divergence.  For most divergences
+        # we compute φ_grad with no_grad (it acts as a fixed weight).
+        # ==================================================================
+        with torch.no_grad():
+            if self.divergence == 'hellinger':
+                phi_grad = 1.0 / (1.0 + expert_reward) ** 2
+            elif self.divergence == 'kl':
+                phi_grad = torch.exp(-expert_reward - 1)
+            elif self.divergence == 'kl2':
+                phi_grad = F.softmax(-expert_reward, dim=0) * expert_reward.shape[0]
+            elif self.divergence == 'kl_fix':
+                phi_grad = torch.exp(-expert_reward)
+            elif self.divergence == 'js':
+                phi_grad = torch.exp(-expert_reward) / (2.0 - torch.exp(-expert_reward))
             else:
-                expert_target = gamma_v_next
+                # 'none' or 'chi' — φ_grad = 1  (χ² adds a separate term below)
+                phi_grad = 1.0
 
-            expert_bellman_residual = expert_q - expert_target
+        softq_loss = -(phi_grad * expert_reward).mean()
+        loss = softq_loss
+        loss_dict['softq_loss'] = softq_loss.item()
 
-            if len(learner_states) > 0:
-                learner_target = self.gamma * (1 - learner_dones.unsqueeze(1)) * learner_next_v
-                learner_bellman_residual = learner_q - learner_target
+        # ==================================================================
+        # TERM 2:  Sampling strategy for the second term
+        # ==================================================================
+        if self.loss_type == 'value_expert':
+            # E_{expert}[ V(s) − γV(s') ]  (works offline)
+            value_loss = (current_V - y)[is_expert.squeeze(1)].mean()
+            loss = loss + value_loss
+            loss_dict['value_loss'] = value_loss.item()
 
-                expert_loss  = (expert_bellman_residual ** 2).mean()
-                learner_loss = 0.5 * F.relu(learner_bellman_residual).mean()
-                loss = expert_loss + self.regularize_weight * learner_loss
-            else:
-                loss = (expert_bellman_residual ** 2).mean()
+        elif self.loss_type == 'value':
+            # E_{all}[ V(s) − γV(s') ]  (works online, DEFAULT)
+            value_loss = (current_V - y).mean()
+            loss = loss + value_loss
+            loss_dict['value_loss'] = value_loss.item()
 
-            grad_penalty = (expert_q ** 2).mean()
-            loss = loss + self.gradient_penalty_weight * grad_penalty
+        elif self.loss_type == 'v0':
+            # (1−γ) · E_{s0}[ V(s0) ]  (offline, usually suboptimal)
+            v0_loss = (1 - self.gamma) * v0
+            loss = loss + v0_loss
+            loss_dict['v0_loss'] = v0_loss.item()
 
-        elif self.loss_type == 'v1':
+        # ==================================================================
+        # TERM 3:  χ² divergence regularisation
+        #
+        # When divergence == 'chi', we add:
+        #   1/(4α) · E_{expert}[ r̂² ]      (offline variant)
+        # This is the key stabilising term from the original paper.
+        # ==================================================================
+        if self.divergence == 'chi':
+            chi2_loss = 1.0 / (4.0 * self.div_alpha) * (expert_reward ** 2).mean()
+            loss = loss + chi2_loss
+            loss_dict['chi2_loss'] = chi2_loss.item()
 
-            if self.use_svo and self.svo_mode == 'bellman':
-                expert_loss = -(expert_q - svo_shift).mean()
-            else:
-                expert_loss = -expert_q.mean()
+        # ==================================================================
+        # Optional: gradient penalty (Wasserstein-1 metric)
+        # For DQN we use a simple Q-magnitude penalty as a proxy since we
+        # don't have the interpolation machinery of the original continuous
+        # action critic.
+        # ==================================================================
+        if self.grad_pen:
+            # Simple gradient penalty proxy: penalise Q magnitude
+            gp_loss = self.lambda_gp * (current_Q ** 2).mean()
+            loss = loss + gp_loss
+            loss_dict['gp_loss'] = gp_loss.item()
 
-            if len(learner_states) > 0:
-                learner_loss = learner_q.mean()
-                loss = expert_loss + self.regularize_weight * learner_loss
-            else:
-                loss = expert_loss
-
-            grad_penalty = (expert_q ** 2).mean()
-            loss = loss + self.gradient_penalty_weight * grad_penalty
-
-        # ---- reward_reg: separate MSE on recovered reward ----
+        # ==================================================================
+        # SVO: reward_reg — separate MSE on recovered reward
+        # ==================================================================
         svo_reg_loss = torch.tensor(0.0, device=self.device)
 
         if self.use_svo and self.svo_mode in ('reward_reg', 'reward_reg_reweight'):
-            # Recovered reward: r̂(s,a) = Q(s,a) − γ(1−d)V(s')
-            r_recovered = expert_q - gamma_v_next
+            # Recovered reward for expert transitions (before bellman shift):
+            # r̂(s,a) = Q(s,a) − γ(1−d)V(s')
+            expert_y = y[is_expert.squeeze(1)]
+            r_recovered = current_Q[is_expert.squeeze(1)] - expert_y
 
-            # Target: λ · R_SVO
-            svo_target = svo_shift  # already = λ * r_svo
+            svo_target = svo_shift  # = λ · R_SVO
 
             svo_reg_loss = ((r_recovered - svo_target) ** 2).mean()
             loss = loss + svo_reg_loss
 
-        # ---- Logging ----
+        # ==================================================================
+        # Build info dict for logging
+        # ==================================================================
+        expert_q = current_Q[is_expert.squeeze(1)]
+        expert_next_v_vals = next_V[:n_expert]
+        gamma_v_next = y[:n_expert]
+
         abs_q_mean       = expert_q.abs().mean().item()
         abs_gamma_v_mean = gamma_v_next.abs().mean().item()
 
         info = {
             'loss':              loss.item(),
             'expert_q_mean':     expert_q.mean().item(),
-            'expert_next_v_mean': expert_next_v.mean().item(),
-            'grad_penalty':      grad_penalty.item(),
+            'expert_next_v_mean': expert_next_v_vals.mean().item(),
             'abs_expert_q_mean': abs_q_mean,
             'abs_gamma_v_mean':  abs_gamma_v_mean,
+            'softq_loss':        loss_dict.get('softq_loss', 0.0),
         }
+        if 'value_loss' in loss_dict:
+            info['value_loss'] = loss_dict['value_loss']
+        if 'v0_loss' in loss_dict:
+            info['v0_loss'] = loss_dict['v0_loss']
+        if 'chi2_loss' in loss_dict:
+            info['chi2_loss'] = loss_dict['chi2_loss']
+        if 'gp_loss' in loss_dict:
+            info['gp_loss'] = loss_dict['gp_loss']
 
+        # SVO logging
         if self.use_svo and r_svo_raw is not None:
             abs_svo_shift_mean = svo_shift.abs().mean().item() if torch.is_tensor(svo_shift) else 0.0
             shift_to_q_ratio   = abs_svo_shift_mean / (abs_q_mean + 1e-8)
@@ -467,7 +604,8 @@ class IQLearnTrainer:
             info['svo_shift_to_q_ratio'] = shift_to_q_ratio
 
         if self.use_svo and self.svo_mode in ('reward_reg', 'reward_reg_reweight'):
-            r_recovered_detached = (expert_q - gamma_v_next).detach()
+            expert_y_detached = y[:n_expert].detach()
+            r_recovered_detached = (expert_q - expert_y_detached).detach()
             info['svo_reg_loss']          = svo_reg_loss.item()
             info['recovered_reward_mean'] = r_recovered_detached.mean().item()
             info['recovered_reward_std']  = r_recovered_detached.std().item()
@@ -478,9 +616,11 @@ class IQLearnTrainer:
             info['svo_raw_mean'] = r_svo_batch.mean().item()
             info['svo_raw_std']  = r_svo_batch.std().item()
 
-        if len(learner_states) > 0:
+        if has_learner:
+            learner_q = current_Q[~is_expert.squeeze(1)]
+            learner_next_v_vals = next_V[n_expert:]
             info['learner_q_mean']     = learner_q.mean().item()
-            info['learner_next_v_mean'] = learner_next_v.mean().item()
+            info['learner_next_v_mean'] = learner_next_v_vals.mean().item()
 
         return loss, info
 
@@ -490,12 +630,13 @@ class IQLearnTrainer:
 
     def update(self, batch_size: int = 256) -> Dict[str, float]:
         """Perform one gradient update."""
-
         expert_batch_size  = int(batch_size * self.replay_ratio)
         learner_batch_size = batch_size - expert_batch_size
 
         # --- Sample expert data ---
-        if self.use_svo and self.svo_mode in ('reweight', 'reward_reg_reweight') and self._expert_svo_weights is not None:
+        if (self.use_svo
+                and self.svo_mode in ('reweight', 'reward_reg_reweight')
+                and self._expert_svo_weights is not None):
             expert_batch = self.expert_buffer.sample_weighted(
                 expert_batch_size, self._expert_svo_weights)
         else:
@@ -512,7 +653,7 @@ class IQLearnTrainer:
         expert_r_globals   = expert_r_globals.to(self.device)
 
         # --- Sample learner data ---
-        if len(self.learner_buffer) >= learner_batch_size:
+        if len(self.learner_buffer) >= learner_batch_size and learner_batch_size > 0:
             learner_batch = self.learner_buffer.sample(learner_batch_size)
             (learner_states, learner_actions, _, learner_next_states,
              learner_dones, _, _) = learner_batch
@@ -555,7 +696,7 @@ class IQLearnTrainer:
         return info
 
     # ==================================================================
-    # Utilities (unchanged from original)
+    # Utilities
     # ==================================================================
 
     def _soft_update_target(self):
@@ -602,9 +743,9 @@ class IQLearnTrainer:
             episode_rewards.append(ep_reward)
             episode_lengths.append(ep_len)
         return {
-            'mean_reward':   np.mean(episode_rewards),
-            'std_reward':    np.std(episode_rewards),
-            'mean_length':   np.mean(episode_lengths),
+            'mean_reward':    np.mean(episode_rewards),
+            'std_reward':     np.std(episode_rewards),
+            'mean_length':    np.mean(episode_lengths),
             'collision_rate': collision_count / num_episodes,
         }
 
@@ -616,7 +757,10 @@ class IQLearnTrainer:
             'losses':     self.losses,
             'expert_q_values':  self.expert_q_values,
             'learner_q_values': self.learner_q_values,
-            # SVO config
+            # Config
+            'loss_type':     self.loss_type,
+            'divergence':    self.divergence,
+            'div_alpha':     self.div_alpha,
             'use_svo':       self.use_svo,
             'svo_mode':      self.svo_mode,
             'svo_alpha':     self.svo_alpha,

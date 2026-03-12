@@ -1,10 +1,13 @@
 """
 Main training script for IQ-Learn with highway-env.
 
+Updated to use the corrected IQ-Learn loss that faithfully implements
+Garg et al. (2021) with all f-divergences, adapted for DQN.
+
 Supports:
-  - Standard IQ-Learn baseline (default)
-  - SVO-Regularized IQ-Learn with three modes:
-      'bellman'    – shift Bellman target (original)
+  - Standard IQ-Learn baseline (default: χ² divergence + 'value' sampling)
+  - SVO-Regularised IQ-Learn with three modes:
+      'bellman'    – shift Bellman target
       'reward_reg' – separate MSE loss on recovered reward (recommended)
       'reweight'   – importance-weight expert sampling
 """
@@ -68,12 +71,11 @@ def plot_training_curves(trainer: IQLearnTrainer, save_dir: str):
         axes[1].legend()
         axes[1].grid(True)
 
-    # Extra panel for reward_reg mode
     if n_rows == 3 and trainer.svo_ratios:
         axes[2].plot(trainer.svo_ratios, label='|SVO shift| / |Q|', alpha=0.7)
         axes[2].set_xlabel('Update Step')
         axes[2].set_ylabel('Ratio')
-        axes[2].set_title('SVO Regularization Impact')
+        axes[2].set_title('SVO Regularisation Impact')
         axes[2].legend()
         axes[2].grid(True)
 
@@ -87,90 +89,89 @@ def train_iq_learn(
     env_config: Dict,
     expert_demo_path: str,
     output_dir: str,
-    # IQ-Learn hyperparameters
+    # IQ-Learn core
     num_updates: int = 10000,
     batch_size: int = 256,
     learning_rate: float = 3e-4,
     gamma: float = 0.99,
     tau: float = 0.005,
     temperature: float = 1.0,
-    method: str = 'value',
-    loss_type: str = 'v0',
-    regularize_weight: float = 1.0,
-    # SVO regularization
+    loss_type: str = 'value',
+    divergence: str = 'chi',
+    div_alpha: float = 0.5,
+    use_target_network: bool = True,
+    grad_pen: bool = False,
+    lambda_gp: float = 10.0,
+    # SVO
     use_svo: bool = False,
     svo_mode: str = 'reward_reg',
     svo_alpha: float = 0.0,
     svo_lambda: float = 1.0,
     normalize_svo: bool = False,
     svo_reweight_temp: float = 1.0,
-    # Training settings
+    # Training
     collect_learner_data: bool = False,
     learner_collection_freq: int = 1000,
     learner_rollout_steps: int = 1000,
     eval_freq: int = 500,
     eval_episodes: int = 10,
     save_freq: int = 2000,
-    # Device
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    device: str = 'cpu',
     seed: int = 42,
-    # W&B
+    # Wandb
     use_wandb: bool = False,
     wandb_project: str = 'svo-irl',
-    wandb_run_name: Optional[str] = None,
-    wandb_tags: Optional[List[str]] = None,
+    wandb_run_name: str = None,
+    wandb_tags: List[str] = None,
+    # Legacy compatibility (accepted but unused by trainer)
+    method: str = 'value',
+    regularize_weight: float = 1.0,
 ):
-    # ------------------------------------------------------------------
-    # Seeds
-    # ------------------------------------------------------------------
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
+    """Train IQ-Learn agent."""
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Config dict (saved for reproducibility)
-    # ------------------------------------------------------------------
+    # Save config
     config_save = {
-        'expert_demo_path': expert_demo_path,
         'num_updates': num_updates,
         'batch_size': batch_size,
         'learning_rate': learning_rate,
         'gamma': gamma,
         'tau': tau,
         'temperature': temperature,
-        'method': method,
         'loss_type': loss_type,
-        'regularize_weight': regularize_weight,
+        'divergence': divergence,
+        'div_alpha': div_alpha,
+        'use_target_network': use_target_network,
+        'grad_pen': grad_pen,
+        'lambda_gp': lambda_gp,
+        'use_svo': use_svo,
+        'svo_mode': svo_mode,
+        'svo_alpha': svo_alpha,
+        'svo_lambda': svo_lambda,
+        'normalize_svo': normalize_svo,
+        'svo_reweight_temp': svo_reweight_temp,
         'collect_learner_data': collect_learner_data,
         'seed': seed,
-        # SVO
-        'use_svo': use_svo,
-        'svo_mode': svo_mode if use_svo else None,
-        'svo_alpha': svo_alpha,
-        'svo_alpha_deg': float(np.degrees(svo_alpha)) if use_svo else None,
-        'svo_lambda': svo_lambda if use_svo else None,
-        'normalize_svo': normalize_svo if use_svo else None,
-        'svo_reweight_temp': svo_reweight_temp if (use_svo and svo_mode in ('reweight', 'reward_reg_reweight')) else None,
-        # Flatten env config
-        **{f'env/{k}': v for k, v in env_config.items()
-           if not isinstance(v, dict)},
+        'device': device,
     }
-
     with open(os.path.join(output_dir, 'config.json'), 'w') as f:
         json.dump(config_save, f, indent=4)
 
-    # ------------------------------------------------------------------
+    # Seed
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
     # W&B
-    # ------------------------------------------------------------------
     if use_wandb:
         try:
             import wandb
         except ImportError:
-            raise ImportError("wandb not installed. Run: pip install wandb")
+            print("wandb not installed. Run: pip install wandb")
+            use_wandb = False
 
+    if use_wandb:
+        import wandb
         wandb.init(
             project=wandb_project,
             name=wandb_run_name,
@@ -185,7 +186,7 @@ def train_iq_learn(
     # ------------------------------------------------------------------
     mode_label = {
         'bellman': 'Bellman-shift',
-        'reward_reg': 'Reward-regularized',
+        'reward_reg': 'Reward-regularised',
         'reweight': 'Reweight-sampling',
         'reward_reg_reweight': 'Reward-reg + Reweight',
     }
@@ -198,11 +199,16 @@ def train_iq_learn(
     print(f"Output directory : {output_dir}")
     print(f"Device           : {device}")
     print(f"Expert demos     : {expert_demo_path}")
+    print(f"Loss type        : {loss_type}")
+    print(f"Divergence       : {divergence}")
+    if divergence == 'chi':
+        print(f"Div alpha (α)    : {div_alpha}")
+    print(f"Use target net   : {use_target_network}")
     if use_svo:
         print(f"SVO mode         : {svo_mode}")
         print(f"SVO α_target     : {np.degrees(svo_alpha):.1f}° ({svo_alpha:.4f} rad)")
         print(f"SVO λ            : {svo_lambda}")
-        print(f"SVO normalize    : {normalize_svo}")
+        print(f"SVO normalise    : {normalize_svo}")
         if svo_mode in ('reweight', 'reward_reg_reweight'):
             print(f"Reweight temp    : {svo_reweight_temp}")
 
@@ -229,7 +235,7 @@ def train_iq_learn(
               f"({'with' if has_svo else 'without'} SVO components)")
         if use_svo and not has_svo:
             print(
-                "\n⚠  WARNING: SVO regularization is enabled but demos "
+                "\n⚠  WARNING: SVO regularisation is enabled but demos "
                 "lack r_self/r_global. Re-extract with updated script."
             )
 
@@ -243,7 +249,7 @@ def train_iq_learn(
     # ------------------------------------------------------------------
     # Trainer
     # ------------------------------------------------------------------
-    print(f"\nInitializing trainer...")
+    print(f"\nInitialising trainer...")
     trainer = IQLearnTrainer(
         env=env,
         state_dim=state_dim,
@@ -253,10 +259,14 @@ def train_iq_learn(
         gamma=gamma,
         tau=tau,
         device=device,
-        method=method,
+        # IQ-Learn core (corrected)
         loss_type=loss_type,
-        regularize_weight=regularize_weight,
+        divergence=divergence,
+        div_alpha=div_alpha,
         temperature=temperature,
+        use_target_network=use_target_network,
+        grad_pen=grad_pen,
+        lambda_gp=lambda_gp,
         # SVO
         use_svo=use_svo,
         svo_mode=svo_mode,
@@ -289,7 +299,10 @@ def train_iq_learn(
         'abs_gamma_v_means': [],
         'abs_svo_shift_means': [],
         'svo_shift_to_q_ratios': [],
-        # New for reward_reg mode
+        'softq_losses': [],
+        'value_losses': [],
+        'chi2_losses': [],
+        # reward_reg mode
         'svo_reg_losses': [],
         'recovered_reward_means': [],
     }
@@ -341,6 +354,12 @@ def train_iq_learn(
             update_info.get('abs_expert_q_mean', 0.0))
         training_log['abs_gamma_v_means'].append(
             update_info.get('abs_gamma_v_mean', 0.0))
+        training_log['softq_losses'].append(
+            update_info.get('softq_loss', 0.0))
+        training_log['value_losses'].append(
+            update_info.get('value_loss', 0.0))
+        training_log['chi2_losses'].append(
+            update_info.get('chi2_loss', 0.0))
 
         if 'svo_raw_mean' in update_info:
             training_log['svo_reward_means'].append(update_info['svo_raw_mean'])
@@ -363,17 +382,24 @@ def train_iq_learn(
                 'train/expert_v_mean':     update_info['expert_next_v_mean'],
                 'train/abs_expert_q_mean': update_info.get('abs_expert_q_mean', 0.0),
                 'train/abs_gamma_v_mean':  update_info.get('abs_gamma_v_mean', 0.0),
+                'train/softq_loss':        update_info.get('softq_loss', 0.0),
             }
+            if 'value_loss' in update_info:
+                log_dict['train/value_loss'] = update_info['value_loss']
+            if 'chi2_loss' in update_info:
+                log_dict['train/chi2_loss'] = update_info['chi2_loss']
+            if 'gp_loss' in update_info:
+                log_dict['train/gp_loss'] = update_info['gp_loss']
+
             if 'learner_q_mean' in update_info:
                 log_dict['train/learner_q_mean'] = update_info['learner_q_mean']
                 log_dict['train/learner_v_mean'] = update_info['learner_next_v_mean']
 
-            # SVO metrics (all modes)
+            # SVO metrics
             if 'svo_raw_mean' in update_info:
                 log_dict['train/svo_raw_mean'] = update_info['svo_raw_mean']
                 log_dict['train/svo_raw_std']  = update_info.get('svo_raw_std', 0.0)
 
-            # Bellman / reward_reg specific
             if 'svo_shift_std' in update_info:
                 log_dict['train/svo_shift_std'] = update_info['svo_shift_std']
                 log_dict['train/svo_shift_min'] = update_info['svo_shift_min']
@@ -381,7 +407,6 @@ def train_iq_learn(
                 log_dict['train/abs_svo_shift_mean']   = update_info['abs_svo_shift_mean']
                 log_dict['train/svo_shift_to_q_ratio'] = update_info['svo_shift_to_q_ratio']
 
-            # reward_reg specific
             if 'svo_reg_loss' in update_info:
                 log_dict['train/svo_reg_loss']          = update_info['svo_reg_loss']
                 log_dict['train/recovered_reward_mean'] = update_info['recovered_reward_mean']
@@ -393,6 +418,9 @@ def train_iq_learn(
         if update % 10 == 0:
             desc = (f"Loss: {update_info['loss']:.4f}  "
                     f"Expert Q: {update_info['expert_q_mean']:.3f}")
+
+            if 'chi2_loss' in update_info:
+                desc += f"  χ²: {update_info['chi2_loss']:.4f}"
 
             if 'svo_reg_loss' in update_info:
                 desc += f"  SVO reg: {update_info['svo_reg_loss']:.4f}"
@@ -422,6 +450,8 @@ def train_iq_learn(
             print(f"  Collision rate: {eval_results['collision_rate']:.2%}")
             print(f"  Loss          : {update_info['loss']:.4f}")
             print(f"  Expert Q      : {update_info['expert_q_mean']:.3f}")
+            if 'chi2_loss' in update_info:
+                print(f"  χ² loss       : {update_info['chi2_loss']:.4f}")
 
             if 'svo_reg_loss' in update_info:
                 print(f"  SVO reg loss  : {update_info['svo_reg_loss']:.4f}")
@@ -524,7 +554,8 @@ def train_iq_learn(
 # ======================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='Train IQ-Learn on highway-env')
+    parser = argparse.ArgumentParser(
+        description='Train IQ-Learn on highway-env (corrected implementation)')
 
     # Paths
     parser.add_argument('--expert-demo', type=str, required=True)
@@ -537,32 +568,51 @@ def main():
     parser.add_argument('--gamma',        type=float, default=0.99)
     parser.add_argument('--temperature',  type=float, default=1.0)
 
-    # IQ-Learn
-    parser.add_argument('--method',            type=str,   default='value',
-                        choices=['value', 'q'])
-    parser.add_argument('--loss-type',         type=str,   default='v0',
-                        choices=['v0', 'v1'])
-    parser.add_argument('--regularize-weight', type=float, default=1.0)
+    # IQ-Learn core (corrected)
+    parser.add_argument('--loss-type', type=str, default='value',
+                        choices=['value', 'value_expert', 'v0'],
+                        help='Sampling strategy for 2nd loss term:\n'
+                             '  value        – E_{all}[V(s)-γV(s\')]  (online, default)\n'
+                             '  value_expert – E_{expert}[V(s)-γV(s\')]  (offline)\n'
+                             '  v0           – (1-γ)E[V(s0)]  (offline, usually suboptimal)')
+    parser.add_argument('--divergence', type=str, default='chi',
+                        choices=['chi', 'kl', 'kl2', 'kl_fix', 'js', 'hellinger', 'none'],
+                        help='f-divergence for IQ-Learn objective:\n'
+                             '  chi       – χ² divergence (recommended, default)\n'
+                             '  kl        – KL (original dual, sub-optimal)\n'
+                             '  kl2       – KL (biased dual)\n'
+                             '  kl_fix    – KL (unbiased fix)\n'
+                             '  js        – Jensen-Shannon\n'
+                             '  hellinger – Hellinger\n'
+                             '  none      – standard (no reweighting)')
+    parser.add_argument('--div-alpha', type=float, default=0.5,
+                        help='α parameter for χ² divergence regularisation. '
+                             'Controls strength: 1/(4α) · E[r̂²]. '
+                             'Only used when --divergence chi.')
+    parser.add_argument('--use-target-network', action='store_true', default=True,
+                        help='Use target network for V(s\') (default: True).')
+    parser.add_argument('--no-target-network', dest='use_target_network',
+                        action='store_false',
+                        help='Disable target network for V(s\').')
+    parser.add_argument('--grad-pen', action='store_true',
+                        help='Enable gradient penalty (Q-magnitude penalty).')
+    parser.add_argument('--lambda-gp', type=float, default=10.0,
+                        help='Gradient penalty coefficient.')
 
-    # SVO regularization
+    # SVO regularisation
     parser.add_argument('--svo-regularize', action='store_true',
-                        help='Enable SVO regularization.')
+                        help='Enable SVO regularisation.')
     parser.add_argument('--svo-mode', type=str, default='reward_reg',
                         choices=['bellman', 'reward_reg', 'reweight', 'reward_reg_reweight'],
-                        help='How to integrate SVO into IQ-Learn:\n'
-                             '  bellman              – shift Bellman target (original)\n'
-                             '  reward_reg           – separate MSE on recovered reward\n'
-                             '  reweight             – importance-weight expert sampling\n'
-                             '  reward_reg_reweight  – both reward_reg + reweight combined')
+                        help='How to integrate SVO into IQ-Learn.')
     parser.add_argument('--svo-alpha', type=float, default=0.0,
                         help='Target SVO angle in radians.')
     parser.add_argument('--svo-lambda', type=float, default=1.0,
-                        help='SVO regularization strength.')
+                        help='SVO regularisation strength.')
     parser.add_argument('--normalize-svo', action='store_true',
-                        help='Batch-normalize R_SVO to zero mean / unit variance.')
+                        help='Batch-normalise R_SVO to zero mean / unit variance.')
     parser.add_argument('--svo-reweight-temp', type=float, default=1.0,
-                        help='Temperature for reweight mode softmax. '
-                             'Lower = more peaked. Only used with --svo-mode reweight.')
+                        help='Temperature for reweight mode softmax.')
 
     # Learner rollouts
     parser.add_argument('--collect-learner-data', action='store_true')
@@ -572,6 +622,7 @@ def main():
     # Evaluation
     parser.add_argument('--eval-freq',     type=int, default=500)
     parser.add_argument('--eval-episodes', type=int, default=10)
+    parser.add_argument('--save-freq',     type=int, default=2000)
 
     # W&B
     parser.add_argument('--wandb',          action='store_true')
@@ -583,7 +634,23 @@ def main():
     parser.add_argument('--seed',   type=int, default=42)
     parser.add_argument('--device', type=str, default='auto')
 
+    # Legacy compatibility (accepted but mapped to new params)
+    parser.add_argument('--method', type=str, default=None,
+                        help='DEPRECATED: use --loss-type instead.')
+    parser.add_argument('--regularize-weight', type=float, default=1.0,
+                        help='DEPRECATED: no longer used (χ² α controls regularisation).')
+
     args = parser.parse_args()
+
+    # Handle legacy --method flag
+    if args.method is not None:
+        print(f"⚠  --method is deprecated. Mapping '{args.method}' -> --loss-type")
+        if args.method == 'value':
+            args.loss_type = 'value'
+        elif args.method == 'q':
+            args.loss_type = 'value_expert'
+        else:
+            print(f"   Unknown method '{args.method}', keeping --loss-type={args.loss_type}")
 
     if args.output_dir is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -604,9 +671,12 @@ def main():
         learning_rate=args.lr,
         gamma=args.gamma,
         temperature=args.temperature,
-        method=args.method,
         loss_type=args.loss_type,
-        regularize_weight=args.regularize_weight,
+        divergence=args.divergence,
+        div_alpha=args.div_alpha,
+        use_target_network=args.use_target_network,
+        grad_pen=args.grad_pen,
+        lambda_gp=args.lambda_gp,
         # SVO
         use_svo=args.svo_regularize,
         svo_mode=args.svo_mode,
@@ -620,6 +690,7 @@ def main():
         learner_rollout_steps=args.learner_steps,
         eval_freq=args.eval_freq,
         eval_episodes=args.eval_episodes,
+        save_freq=args.save_freq,
         device=device,
         seed=args.seed,
         use_wandb=args.wandb,
@@ -629,7 +700,7 @@ def main():
     )
 
     print(f"\n{'='*60}")
-    print(f"Training complete! Results saved to: {args.output_dir}")
+    print(f"Training complete!")
     print(f"{'='*60}\n")
 
 

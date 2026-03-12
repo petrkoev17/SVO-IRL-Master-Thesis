@@ -40,7 +40,7 @@ INTERSECTION_CONFIG = {
     },
 
     # Traffic
-    "other_vehicles_type": "src.vehicles.randomized_idm_vehicle.RandomizedIDMVehicle",
+    # "other_vehicles_type": "src.vehicles.randomized_idm_vehicle.RandomizedIDMVehicle",
     "destination": "o1",
     "controlled_vehicles": 1,
     "initial_vehicle_count": 10,
@@ -48,7 +48,7 @@ INTERSECTION_CONFIG = {
     "duration": 13,
 
     # Physics
-    "simulation_frequency": 15,
+    "simulation_frequency": 10,
     "policy_frequency": 1,
     "screen_width": 600,
     "screen_height": 600,
