@@ -44,7 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description="Plot Q-value heatmaps")
     parser.add_argument('--baseline', type=str, default='./runs/model_e10.pt',
                         help='Path to the unregularized model')
-    parser.add_argument('--regularized', type=str, default='./runs/model_e7.pt',
+    parser.add_argument('--regularized', type=str, default='./runs/model_e11.pt',
                         help='Path to the SVO-regularized model')
     parser.add_argument('--save-dir', type=str, default='./runs',
                         help='Directory to save the plot')

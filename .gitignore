@@ -8,6 +8,9 @@ env/
 *.egg-info/
 
 iq_learn_runs/
+*.npy
+*.png
+
 # --- IDE Settings ---
 .idea/
 .vscode/

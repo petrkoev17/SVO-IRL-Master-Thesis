@@ -113,7 +113,7 @@ def main():
             trainer.save(ckpt_path)
 
     # Save the final model when training finishes
-    final_path = os.path.join(args.output_dir, "model_e10.pt")
+    final_path = os.path.join(args.output_dir, "model_e11.pt")
     trainer.save(final_path)
     print(f"\nTraining Complete! Final model saved to: {final_path}")
 
