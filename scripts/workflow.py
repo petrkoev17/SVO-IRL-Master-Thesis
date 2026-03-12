@@ -110,7 +110,8 @@ def main():
         metavar='RADIANS|deg:X|NAME',
         help=(
             'SVO angle for the environment wrapper (statistics only).\n'
-            'Always stored and used in RADIANS. Accepted formats:\n'
+            'Always stored and used in RADIANS.\n'
+            'Accepted formats:\n'
             '  Raw radians:   1.5708\n'
             '  Degree helper: deg:90\n'
             '  Named preset:  egoistic | cooperative | prosocial |\n'
@@ -132,11 +133,35 @@ def main():
     parser.add_argument('--lr', type=float, default=3e-4)
 
     # ------------------------------------------------------------------
-    # IQ-Learn specific
+    # IQ-Learn core (corrected to match train_iq_learn signature)
     # ------------------------------------------------------------------
-    parser.add_argument('--loss-type', type=str, default='v0',
-                        choices=['v0', 'v1'])
+    parser.add_argument('--loss-type', type=str, default='value',
+                        choices=['value', 'value_expert', 'v0'],
+                        help='Sampling strategy for 2nd loss term:\n'
+                             '  value        – E_{all}[V(s)-γV(s\')] (online, default)\n'
+                             '  value_expert – E_{expert}[V(s)-γV(s\')] (offline)\n'
+                             '  v0           – (1-γ)E[V(s0)] (offline, usually suboptimal)')
+    parser.add_argument('--divergence', type=str, default='chi',
+                        choices=['chi', 'kl', 'kl2', 'kl_fix', 'js', 'hellinger', 'none'],
+                        help='f-divergence for IQ-Learn objective:\n'
+                             '  chi       – χ² divergence (recommended, default)\n'
+                             '  kl        – KL (original dual, sub-optimal)\n'
+                             '  kl2       – KL (biased dual)\n'
+                             '  kl_fix    – KL (unbiased fix)\n'
+                             '  js        – Jensen-Shannon\n'
+                             '  hellinger – Hellinger\n'
+                             '  none      – standard (no reweighting)')
+    parser.add_argument('--div-alpha', type=float, default=0.5,
+                        help='α parameter for χ² divergence regularisation. '
+                             'Controls strength: 1/(4α) · E[r̂²]. '
+                             'Only used when --divergence chi.')
     parser.add_argument('--temperature', type=float, default=1.0)
+    parser.add_argument('--use-target-network', action='store_true', default=True,
+                        help='Use target network for V(s\') (default: True).')
+    parser.add_argument('--grad-pen', action='store_true', default=False,
+                        help='Enable gradient penalty (Wasserstein-1 proxy).')
+    parser.add_argument('--lambda-gp', type=float, default=10.0,
+                        help='Gradient penalty coefficient.')
 
     # ------------------------------------------------------------------
     # SVO regularization
@@ -146,7 +171,7 @@ def main():
     parser.add_argument('--svo-mode', type=str, default='reward_reg',
                         choices=['bellman', 'reward_reg', 'reweight', 'reward_reg_reweight'],
                         help='SVO integration mode:\n'
-                             '  bellman              – shift Bellman target (original)\n'
+                             '  bellman              – shift Bellman target\n'
                              '  reward_reg           – separate MSE on recovered reward\n'
                              '  reweight             – importance-weight expert sampling\n'
                              '  reward_reg_reweight  – both reward_reg + reweight combined')
@@ -173,9 +198,6 @@ def main():
     # ------------------------------------------------------------------
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--tau', type=float, default=0.005)
-    parser.add_argument('--method', type=str, default='value',
-                        choices=['value', 'q'])
-    parser.add_argument('--regularize-weight', type=float, default=1.0)
 
     # ------------------------------------------------------------------
     # Online Learner Rollouts
@@ -188,8 +210,8 @@ def main():
     # Evaluation & Saving
     # ------------------------------------------------------------------
     parser.add_argument('--eval-freq', type=int, default=500)
-    parser.add_argument('--eval-episodes', type=int, default=10)
-    parser.add_argument('--save-freq', type=int, default=2000)
+    parser.add_argument('--eval-episodes', type=int, default=100)
+    parser.add_argument('--save-freq', type=int, default=500)
 
     # ------------------------------------------------------------------
     # Misc
@@ -271,9 +293,13 @@ def main():
             gamma=args.gamma,
             tau=args.tau,
             temperature=args.temperature,
-            method=args.method,
+            # IQ-Learn core (corrected)
             loss_type=args.loss_type,
-            regularize_weight=args.regularize_weight,
+            divergence=args.divergence,
+            div_alpha=args.div_alpha,
+            use_target_network=args.use_target_network,
+            grad_pen=args.grad_pen,
+            lambda_gp=args.lambda_gp,
             # SVO
             use_svo=args.svo_regularize,
             svo_mode=args.svo_mode,
