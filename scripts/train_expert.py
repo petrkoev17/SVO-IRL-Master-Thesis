@@ -12,8 +12,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from wandb.integration.sb3 import WandbCallback
 
 
-from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
-from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
+from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
 
 def make_env(rank: int, svo_alpha: float, seed: int = 42):
     """
@@ -77,18 +77,19 @@ def train(args):
 
     model = DQN('MlpPolicy', env,
                 policy_kwargs=dict(net_arch=[256, 256]),
-                learning_rate=5e-4,
-                buffer_size=15000,
-                learning_starts=1000,
-                batch_size=32,
+                learning_rate=3e-4,
+                buffer_size=100000,
+                learning_starts=5000,
+                batch_size=256,
                 gamma=0.95,
-                train_freq=1,
+                train_freq=4,
                 gradient_steps=1,
                 target_update_interval=500,
+                exploration_fraction=0.3,
+                exploration_final_eps=0.05,
                 verbose=1,
                 tensorboard_log="highway_dqn/",
                 device="cuda")
-
 
 
     # Callbacks
@@ -108,10 +109,10 @@ def train(args):
         eval_env,
         best_model_save_path=best_model_path,
         log_path=save_path,
-        eval_freq=50000 // num_cpu,
+        eval_freq=100000 // num_cpu,
         deterministic=True,
         render=False,
-        n_eval_episodes=100,
+        n_eval_episodes=50,
         verbose=1,
     )
 

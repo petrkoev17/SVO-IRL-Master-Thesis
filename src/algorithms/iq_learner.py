@@ -52,32 +52,43 @@ class ReplayBuffer:
     Replay Buffer for expert demonstrations and learner experience.
 
     Each transition stores:
-        (state, action, reward, next_state, done, r_self, r_global)
+        (state, action, reward, next_state, done, r_self, r_global, G_self, G_global)
 
-    r_self and r_global are the raw SVO reward components.  They always
-    default to 0.0 so the buffer format is uniform regardless of whether
-    SVO regularisation is active.
+    r_self and r_global are the raw instantaneous SVO reward components.
+    G_self and G_global are cumulative discounted SVO returns (optional).
+    All SVO fields default to 0.0 so the buffer format is uniform
+    regardless of whether SVO regularisation is active.
     """
 
     def __init__(self, capacity: int = 100000):
         self.buffer = deque(maxlen=capacity)
 
     def add(self, state, action, reward, next_state, done,
-            r_self: float = 0.0, r_global: float = 0.0):
-        self.buffer.append((state, action, reward, next_state, done, r_self, r_global))
+            r_self: float = 0.0, r_global: float = 0.0,
+            G_self: float = 0.0, G_global: float = 0.0):
+        self.buffer.append((state, action, reward, next_state, done,
+                            r_self, r_global, G_self, G_global))
 
     def add_trajectory(self, trajectory: List[Tuple]):
         """
         Add entire trajectory to the buffer.
 
         Supported tuple formats:
-            5-element: (s, a, r, s', done)
-            6-element: (s, a, r, s', done, crashed)
-            8-element: (s, a, r, s', done, crashed, r_self, r_global)
+            5-element:  (s, a, r, s', done)
+            6-element:  (s, a, r, s', done, crashed)
+            8-element:  (s, a, r, s', done, crashed, r_self, r_global)
+            10-element: (s, a, r, s', done, crashed, r_self, r_global, G_self, G_global)
         """
         for transition in trajectory:
             n = len(transition)
-            if n >= 8:
+            if n >= 10:
+                self.add(
+                    transition[0], transition[1], transition[2],
+                    transition[3], transition[4],
+                    float(transition[6]), float(transition[7]),
+                    float(transition[8]), float(transition[9]),
+                )
+            elif n >= 8:
                 self.add(
                     transition[0], transition[1], transition[2],
                     transition[3], transition[4],
@@ -107,16 +118,17 @@ class ReplayBuffer:
     def _gather(self, indices):
         batch = [self.buffer[idx] for idx in indices]
 
-        states      = torch.FloatTensor(np.array([x[0].flatten() for x in batch]))
-        actions     = torch.LongTensor(np.array([x[1] for x in batch]))
-        rewards     = torch.FloatTensor(np.array([x[2] for x in batch]))
+        states = torch.FloatTensor(np.array([x[0].flatten() for x in batch]))
+        actions = torch.LongTensor(np.array([x[1] for x in batch]))
+        rewards = torch.FloatTensor(np.array([x[2] for x in batch]))
         next_states = torch.FloatTensor(np.array([x[3].flatten() for x in batch]))
-        dones       = torch.FloatTensor(np.array([x[4] for x in batch]))
-        r_selfs     = torch.FloatTensor(np.array([x[5] for x in batch]))
-        r_globals   = torch.FloatTensor(np.array([x[6] for x in batch]))
+        dones = torch.FloatTensor(np.array([x[4] for x in batch]))
+        r_selfs = torch.FloatTensor(np.array([x[5] for x in batch]))
+        r_globals = torch.FloatTensor(np.array([x[6] for x in batch]))
+        G_selfs = torch.FloatTensor(np.array([x[7] for x in batch]))
+        G_globals = torch.FloatTensor(np.array([x[8] for x in batch]))
 
-        return states, actions, rewards, next_states, dones, r_selfs, r_globals
-
+        return states, actions, rewards, next_states, dones, r_selfs, r_globals, G_selfs, G_globals
     def __len__(self):
         return len(self.buffer)
 
@@ -212,6 +224,7 @@ class IQLearnTrainer:
                  svo_lambda: float = 1.0,
                  normalize_svo: bool = False,
                  svo_reweight_temp: float = 1.0,
+                 svo_cumulative: bool = False,
                  # Legacy compatibility (ignored but accepted)
                  method: str = 'value',
                  regularize_weight: float = 1.0,
@@ -255,6 +268,7 @@ class IQLearnTrainer:
         self.sin_alpha = np.sin(svo_alpha)
         self.normalize_svo = normalize_svo
         self.svo_reweight_temp = svo_reweight_temp
+        self.svo_cumulative = svo_cumulative
         self._expert_svo_weights: Optional[np.ndarray] = None
 
         if self.use_svo:
@@ -265,6 +279,7 @@ class IQLearnTrainer:
                 )
             print(f"[SVO-IQ] SVO regularisation ENABLED")
             print(f"[SVO-IQ]   mode       = {svo_mode}")
+            print(f"[SVO-IQ]   cumulative = {svo_cumulative}")
             print(f"[SVO-IQ]   α_target   = {np.degrees(svo_alpha):.1f}°  ({svo_alpha:.4f} rad)")
             print(f"[SVO-IQ]   λ          = {svo_lambda}")
             print(f"[SVO-IQ]   normalise  = {normalize_svo}")
@@ -309,8 +324,11 @@ class IQLearnTrainer:
         print(f"Loading {len(demonstrations)} expert demonstrations")
 
         has_svo = False
+        has_cumulative = False
         if demonstrations and demonstrations[0]:
-            has_svo = len(demonstrations[0][0]) >= 8
+            tup_len = len(demonstrations[0][0])
+            has_svo = tup_len >= 8
+            has_cumulative = tup_len >= 10
 
         if self.use_svo and not has_svo:
             print(
@@ -319,20 +337,41 @@ class IQLearnTrainer:
                 "SVO reward shaping will use zeros (no effect)."
             )
 
+        if self.use_svo and self.svo_cumulative and not has_cumulative:
+            print(
+                "[SVO-IQ] WARNING: svo_cumulative=True but demonstrations "
+                "do not contain G_self / G_global (need 10-element tuples). "
+                "Run: python extract_demonstrations.py augment --input <path> --gamma-svo 0.99\n"
+                "Falling back to instantaneous r_self / r_global."
+            )
+            self.svo_cumulative = False
+
         for traj in demonstrations:
             self.expert_buffer.add_trajectory(traj)
         print(f"Expert buffer size: {len(self.expert_buffer)}")
+
+        if has_cumulative:
+            print(f"[SVO-IQ] Demonstrations contain cumulative returns (G_self, G_global)")
 
         if self.use_svo and self.svo_mode in ('reweight', 'reward_reg_reweight'):
             self._compute_expert_weights()
 
     def _compute_expert_weights(self):
-        """Compute per-transition importance weights from R_SVO."""
+        """Compute per-transition importance weights from R_SVO.
+
+        When svo_cumulative=True, uses G_self/G_global (cumulative returns)
+        instead of instantaneous r_self/r_global.
+        """
         n = len(self.expert_buffer)
         svo_vals = np.empty(n, dtype=np.float32)
 
-        for i, (_, _, _, _, _, r_self, r_global) in enumerate(self.expert_buffer.buffer):
-            svo_vals[i] = self.cos_alpha * r_self + self.sin_alpha * r_global
+        for i, transition in enumerate(self.expert_buffer.buffer):
+            if self.svo_cumulative:
+                # G_self at index 7, G_global at index 8
+                svo_vals[i] = self.cos_alpha * transition[7] + self.sin_alpha * transition[8]
+            else:
+                # r_self at index 5, r_global at index 6
+                svo_vals[i] = self.cos_alpha * transition[5] + self.sin_alpha * transition[6]
 
         logits = svo_vals / (self.svo_reweight_temp + 1e-8)
         logits -= logits.max()
@@ -350,9 +389,18 @@ class IQLearnTrainer:
     # ==================================================================
 
     def _compute_svo_reward(self, r_selfs: torch.Tensor,
-                            r_globals: torch.Tensor) -> torch.Tensor:
-        """R_SVO = cos(α) · r_self + sin(α) · r_global  →  [batch, 1]"""
-        r_svo = self.cos_alpha * r_selfs + self.sin_alpha * r_globals
+                            r_globals: torch.Tensor,
+                            G_selfs: torch.Tensor = None,
+                            G_globals: torch.Tensor = None) -> torch.Tensor:
+        """R_SVO from instantaneous or cumulative values  →  [batch, 1]
+
+        When svo_cumulative=True and G fields are provided, uses those.
+        Otherwise falls back to instantaneous r_self/r_global.
+        """
+        if self.svo_cumulative and G_selfs is not None and G_globals is not None:
+            r_svo = self.cos_alpha * G_selfs + self.sin_alpha * G_globals
+        else:
+            r_svo = self.cos_alpha * r_selfs + self.sin_alpha * r_globals
         return r_svo.unsqueeze(1)
 
     # ==================================================================
@@ -380,9 +428,10 @@ class IQLearnTrainer:
                         expert_states, expert_actions,
                         expert_next_states, expert_dones,
                         expert_r_selfs, expert_r_globals,
+                        expert_G_selfs, expert_G_globals,
                         learner_states, learner_actions,
                         learner_next_states, learner_dones,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+                        ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute the full IQ-Learn loss.
 
@@ -448,7 +497,8 @@ class IQLearnTrainer:
 
         if self.use_svo and self.svo_mode in ('bellman', 'reward_reg', 'reward_reg_reweight'):
             r_svo_raw = self._compute_svo_reward(
-                expert_r_selfs, expert_r_globals).to(self.device)
+                expert_r_selfs, expert_r_globals,
+                expert_G_selfs, expert_G_globals).to(self.device)
 
             if self.normalize_svo:
                 mu  = r_svo_raw.mean()
@@ -643,20 +693,23 @@ class IQLearnTrainer:
             expert_batch = self.expert_buffer.sample(expert_batch_size)
 
         (expert_states, expert_actions, _, expert_next_states,
-         expert_dones, expert_r_selfs, expert_r_globals) = expert_batch
+         expert_dones, expert_r_selfs, expert_r_globals,
+         expert_G_selfs, expert_G_globals) = expert_batch
 
-        expert_states      = expert_states.to(self.device)
-        expert_actions     = expert_actions.to(self.device)
+        expert_states = expert_states.to(self.device)
+        expert_actions = expert_actions.to(self.device)
         expert_next_states = expert_next_states.to(self.device)
-        expert_dones       = expert_dones.to(self.device)
-        expert_r_selfs     = expert_r_selfs.to(self.device)
-        expert_r_globals   = expert_r_globals.to(self.device)
+        expert_dones = expert_dones.to(self.device)
+        expert_r_selfs = expert_r_selfs.to(self.device)
+        expert_r_globals = expert_r_globals.to(self.device)
+        expert_G_selfs = expert_G_selfs.to(self.device)
+        expert_G_globals = expert_G_globals.to(self.device)
 
         # --- Sample learner data ---
         if len(self.learner_buffer) >= learner_batch_size and learner_batch_size > 0:
             learner_batch = self.learner_buffer.sample(learner_batch_size)
             (learner_states, learner_actions, _, learner_next_states,
-             learner_dones, _, _) = learner_batch
+             learner_dones, _, _, _, _) = learner_batch
 
             learner_states      = learner_states.to(self.device)
             learner_actions     = learner_actions.to(self.device)
@@ -672,6 +725,7 @@ class IQLearnTrainer:
         loss, info = self.compute_iq_loss(
             expert_states, expert_actions, expert_next_states, expert_dones,
             expert_r_selfs, expert_r_globals,
+            expert_G_selfs, expert_G_globals,
             learner_states, learner_actions, learner_next_states, learner_dones,
         )
 
@@ -766,6 +820,7 @@ class IQLearnTrainer:
             'svo_alpha':     self.svo_alpha,
             'svo_lambda':    self.svo_lambda,
             'normalize_svo': self.normalize_svo,
+            'svo_cumulative': self.svo_cumulative,
         }, path)
         print(f"Saved model to {path}")
 

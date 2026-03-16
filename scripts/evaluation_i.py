@@ -22,8 +22,8 @@ from stable_baselines3 import DQN, PPO
 from rich.console import Console
 from rich.table import Table
 
-from configs.intersection_config import INTERSECTION_CONFIG
-from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper
+from configs.intersection_config_new import INTERSECTION_CONFIG
+from src.envs.svo_intersection_new import SVOIntersectionWrapper
 from src.algorithms.iq_learner import IQLearnTrainer
 
 

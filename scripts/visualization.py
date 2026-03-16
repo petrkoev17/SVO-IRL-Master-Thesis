@@ -10,8 +10,8 @@ from highway_env.envs import HighwayEnv
 # from configs.env_config import ENV_CONFIG
 # from src.envs.svo_wrapper import SVOWrapper
 
-from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
-from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOWrapper
+from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOWrapper
 
 from src.algorithms.iq_learner import IQLearnTrainer  # Add this import
 
@@ -74,7 +74,7 @@ def visualize(args):
             ego_vehicle = env.unwrapped.vehicle
             neighbours = env.unwrapped.road.close_vehicles_to(
                 vehicle=ego_vehicle,
-                distance=50.0,
+                distance=30.0,
                 count=env.neighbour_count,
                 sort=True
             )
@@ -87,9 +87,9 @@ def visualize(args):
                 if vehicle is ego_vehicle:
                     vehicle.color = (50, 200, 0)  # Green for ego (default)
                 elif vehicle in svo_neighbors:
-                    vehicle.color = (255, 165, 0)  # Orange for SVO neighbors
+                    vehicle.color = (0, 0, 0)  # Orange for SVO neighbors
                 else:
-                    vehicle.color = (100, 100, 200)  # Blue for others
+                    vehicle.color = (255, 192, 203)  # Blue for others
 
             env.render()
 

@@ -26,7 +26,7 @@ import torch
 from scripts.extract_demonstrations import extract_from_multiple_agents, load_demonstrations
 from scripts.train_iq_learn import train_iq_learn
 # from src.envs.svo_pure_wrapper import SVOPureWrapper
-from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
+from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
 
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians
@@ -184,6 +184,9 @@ def main():
                         help='Batch-normalize R_SVO to zero mean / unit var.')
     parser.add_argument('--svo-reweight-temp', type=float, default=1.0,
                         help='Temperature for reweight mode softmax.')
+    parser.add_argument('--svo-cumulative', action='store_true',
+                        help='Use cumulative discounted SVO returns (G_self, G_global) '
+                             'instead of instantaneous. Requires 10-element demo tuples.')
 
     # ------------------------------------------------------------------
     # W&B
@@ -221,7 +224,7 @@ def main():
     args = parser.parse_args()
 
     # from configs.env_config import ENV_CONFIG
-    from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
+    from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -307,6 +310,7 @@ def main():
             svo_lambda=args.svo_lambda,
             normalize_svo=args.normalize_svo,
             svo_reweight_temp=args.svo_reweight_temp,
+            svo_cumulative=args.svo_cumulative,
             # Training
             collect_learner_data=args.collect_learner_data,
             learner_collection_freq=args.learner_freq,

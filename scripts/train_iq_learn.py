@@ -31,11 +31,11 @@ from scripts.extract_demonstrations import (
     combine_demonstrations
 )
 
-from src.envs.svo_pure_wrapper import SVOPureWrapper
-from configs.env_config import ENV_CONFIG
+# from src.envs.svo_pure_wrapper import SVOPureWrapper
+# from configs.env_config import ENV_CONFIG
 
-# from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
-# from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
+from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
 
 
 def create_env(config: Dict, svo_angle: float = 0.0, render_mode: str = None):
@@ -109,6 +109,7 @@ def train_iq_learn(
     svo_lambda: float = 1.0,
     normalize_svo: bool = False,
     svo_reweight_temp: float = 1.0,
+    svo_cumulative: bool = False,
     # Training
     collect_learner_data: bool = False,
     learner_collection_freq: int = 1000,
@@ -151,6 +152,7 @@ def train_iq_learn(
         'svo_lambda': svo_lambda,
         'normalize_svo': normalize_svo,
         'svo_reweight_temp': svo_reweight_temp,
+        'svo_cumulative': svo_cumulative,
         'collect_learner_data': collect_learner_data,
         'seed': seed,
         'device': device,
@@ -206,6 +208,7 @@ def train_iq_learn(
     print(f"Use target net   : {use_target_network}")
     if use_svo:
         print(f"SVO mode         : {svo_mode}")
+        print(f"SVO cumulative   : {svo_cumulative}")
         print(f"SVO α_target     : {np.degrees(svo_alpha):.1f}° ({svo_alpha:.4f} rad)")
         print(f"SVO λ            : {svo_lambda}")
         print(f"SVO normalise    : {normalize_svo}")
@@ -274,6 +277,7 @@ def train_iq_learn(
         svo_lambda=svo_lambda,
         normalize_svo=normalize_svo,
         svo_reweight_temp=svo_reweight_temp,
+        svo_cumulative=svo_cumulative,
     )
 
     trainer.load_expert_demonstrations(expert_trajectories)
@@ -613,6 +617,9 @@ def main():
                         help='Batch-normalise R_SVO to zero mean / unit variance.')
     parser.add_argument('--svo-reweight-temp', type=float, default=1.0,
                         help='Temperature for reweight mode softmax.')
+    parser.add_argument('--svo-cumulative', action='store_true',
+                        help='Use cumulative discounted SVO returns (G_self, G_global) '
+                             'instead of instantaneous. Requires 10-element demo tuples.')
 
     # Learner rollouts
     parser.add_argument('--collect-learner-data', action='store_true')
@@ -684,6 +691,7 @@ def main():
         svo_lambda=args.svo_lambda,
         normalize_svo=args.normalize_svo,
         svo_reweight_temp=args.svo_reweight_temp,
+        svo_cumulative=args.svo_cumulative,
         # Training
         collect_learner_data=args.collect_learner_data,
         learner_collection_freq=args.learner_freq,

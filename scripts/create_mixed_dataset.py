@@ -48,8 +48,8 @@ from scripts.extract_demonstrations import (
 # from src.envs.svo_pure_wrapper import SVOPureWrapper
 # from configs.env_config import ENV_CONFIG
 
-from configs.intersection_config import INTERSECTION_CONFIG as ENV_CONFIG
-from src.envs.svo_intersection_wrapper import SVOIntersectionWrapper as SVOPureWrapper
+from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
+from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
 
 def create_env(svo_angle_deg: float, global_aggregation: str = 'mean'):
     """Create highway env with SVOPureWrapper at the given angle (degrees)."""

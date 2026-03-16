@@ -18,6 +18,58 @@ from stable_baselines3 import DQN
 from tqdm import tqdm
 import os
 
+def compute_cumulative_svo_returns(
+    trajectories: List[List[Tuple]],
+    gamma_svo: float = 0.99,
+) -> List[List[Tuple]]:
+    """
+    Compute cumulative discounted returns for r_self and r_global,
+    then augment each transition with G_self and G_global.
+
+    G_self_t  = sum_{k=0}^{T-1-t}  gamma_svo^k * r_self_{t+k}
+    G_global_t = sum_{k=0}^{T-1-t}  gamma_svo^k * r_global_{t+k}
+
+    Input:  8-element tuples (s, a, r, s', done, crashed, r_self, r_global)
+    Output: 10-element tuples (..., G_self, G_global)
+    """
+    augmented = []
+
+    for traj in trajectories:
+        T = len(traj)
+        if T == 0:
+            augmented.append([])
+            continue
+
+        if len(traj[0]) < 8:
+            raise ValueError(
+                f"Transitions must have >= 8 elements (got {len(traj[0])}). "
+                f"Re-extract demos with SVO wrapper."
+            )
+
+        r_selfs = np.array([float(t[6]) for t in traj], dtype=np.float64)
+        r_globals = np.array([float(t[7]) for t in traj], dtype=np.float64)
+
+        G_selfs = np.zeros(T, dtype=np.float64)
+        G_globals = np.zeros(T, dtype=np.float64)
+
+        G_selfs[-1] = r_selfs[-1]
+        G_globals[-1] = r_globals[-1]
+
+        for t in range(T - 2, -1, -1):
+            G_selfs[t] = r_selfs[t] + gamma_svo * G_selfs[t + 1]
+            G_globals[t] = r_globals[t] + gamma_svo * G_globals[t + 1]
+
+        aug_traj = []
+        for t_idx, transition in enumerate(traj):
+            base = transition[:8]
+            aug_traj.append(base + (
+                float(G_selfs[t_idx]),
+                float(G_globals[t_idx]),
+            ))
+        augmented.append(aug_traj)
+
+    return augmented
+
 
 def extract_demonstrations_from_agent(
     agent: DQN,
@@ -291,5 +343,50 @@ def combine_demonstrations(
 
 
 if __name__ == "__main__":
-    print("This is a utility module for extracting demonstrations.")
-    print("Import and use the functions in your training script.")
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description="Extract or augment expert demonstrations.",
+    )
+    subparsers = parser.add_subparsers(dest='command')
+
+    aug_parser = subparsers.add_parser(
+        'augment',
+        help='Augment existing .pkl demos with cumulative discounted SVO returns.',
+    )
+    aug_parser.add_argument('--input', type=str, required=True,
+                            help='Path to existing demonstrations .pkl file.')
+    aug_parser.add_argument('--output', type=str, default=None,
+                            help='Output path. Defaults to <input>_cumulative.pkl')
+    aug_parser.add_argument('--gamma-svo', type=float, default=0.99,
+                            help='Discount factor for SVO returns (default: 0.99).')
+
+    args = parser.parse_args()
+
+    if args.command == 'augment':
+        trajectories, stats, metadata = load_demonstrations(args.input)
+
+        sample_len = len(trajectories[0][0]) if trajectories and trajectories[0] else 0
+        if sample_len < 8:
+            print(f"ERROR: Transitions have {sample_len} elements, need >= 8.")
+            sys.exit(1)
+
+        print(f"Loaded {len(trajectories)} trajectories from {args.input}")
+        print(f"Computing cumulative SVO returns with γ_svo={args.gamma_svo}...")
+
+        augmented = compute_cumulative_svo_returns(trajectories, args.gamma_svo)
+
+        metadata = metadata or {}
+        metadata['gamma_svo'] = args.gamma_svo
+        metadata['cumulative_svo'] = True
+
+        output_path = args.output or args.input.replace('.pkl', '_cumulative.pkl')
+        save_demonstrations(augmented, stats, output_path, metadata)
+
+        sample = augmented[0][0]
+        print(f"\nVerification: tuple length = {len(sample)}")
+        print(f"  r_self={sample[6]:.4f}, r_global={sample[7]:.4f}")
+        print(f"  G_self={sample[8]:.4f}, G_global={sample[9]:.4f}")
+    else:
+        print("Usage: python extract_demonstrations.py augment --input <path> --gamma-svo 0.99")
