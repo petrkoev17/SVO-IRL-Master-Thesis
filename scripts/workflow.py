@@ -169,11 +169,13 @@ def main():
     parser.add_argument('--svo-regularize', action='store_true',
                         help='Enable SVO regularization of IQ-Learn.')
     parser.add_argument('--svo-mode', type=str, default='reward_reg',
-                        choices=['bellman', 'reward_reg', 'reweight', 'reward_reg_reweight'],
+                        choices=['bellman', 'reward_reg', 'reweight',
+                                 'chi2_weighted', 'reward_reg_reweight'],
                         help='SVO integration mode:\n'
-                             '  bellman              – shift Bellman target\n'
+                             '  bellman              – shift Bellman target (inert under χ²)\n'
                              '  reward_reg           – separate MSE on recovered reward\n'
                              '  reweight             – importance-weight expert sampling\n'
+                             '  chi2_weighted        – SVO-weighted χ² regularizer\n'
                              '  reward_reg_reweight  – both reward_reg + reweight combined')
     parser.add_argument('--svo-alpha-target', type=parse_svo_angle, default=0.0,
                         metavar='RADIANS|deg:X|NAME',

@@ -190,6 +190,7 @@ def train_iq_learn(
         'bellman': 'Bellman-shift',
         'reward_reg': 'Reward-regularised',
         'reweight': 'Reweight-sampling',
+        'chi2_weighted': 'χ²-weighted',
         'reward_reg_reweight': 'Reward-reg + Reweight',
     }
     header = (f"SVO-IQ ({mode_label.get(svo_mode, svo_mode)})"
@@ -416,6 +417,18 @@ def train_iq_learn(
                 log_dict['train/recovered_reward_mean'] = update_info['recovered_reward_mean']
                 log_dict['train/recovered_reward_std']  = update_info['recovered_reward_std']
 
+            # chi2_weighted diagnostics
+            if 'chi2_svo_w_min' in update_info:
+                log_dict['train/chi2_svo_w_min'] = update_info['chi2_svo_w_min']
+                log_dict['train/chi2_svo_w_max'] = update_info['chi2_svo_w_max']
+                log_dict['train/chi2_svo_w_std'] = update_info['chi2_svo_w_std']
+                log_dict['train/chi2_svo_effective_n'] = update_info['chi2_svo_effective_n']
+
+            if 'implicit_reward_mean' in update_info:
+                log_dict['train/implicit_reward_mean'] = update_info['implicit_reward_mean']
+                log_dict['train/implicit_reward_std'] = update_info['implicit_reward_std']
+
+
             wandb.log(log_dict, step=update)
 
         # --- Progress bar ---
@@ -436,6 +449,14 @@ def train_iq_learn(
                              f"{update_info['svo_shift_max']:.2f}]")
                 if 'svo_shift_to_q_ratio' in update_info:
                     desc += f"  Ratio: {update_info['svo_shift_to_q_ratio']:.3f}"
+
+            if 'chi2_svo_w_min' in update_info:
+                print(f"  χ² weights    : [{update_info['chi2_svo_w_min']:.3f}, "
+                      f"{update_info['chi2_svo_w_max']:.3f}]  "
+                      f"std={update_info['chi2_svo_w_std']:.3f}  "
+                      f"eff_N={update_info['chi2_svo_effective_n']:.0f}")
+                print(f"  Implicit r̂    : {update_info.get('implicit_reward_mean', 0):.3f} "
+                      f"± {update_info.get('implicit_reward_std', 0):.3f}")
 
             pbar.set_description(desc)
 
@@ -607,8 +628,14 @@ def main():
     parser.add_argument('--svo-regularize', action='store_true',
                         help='Enable SVO regularisation.')
     parser.add_argument('--svo-mode', type=str, default='reward_reg',
-                        choices=['bellman', 'reward_reg', 'reweight', 'reward_reg_reweight'],
-                        help='How to integrate SVO into IQ-Learn.')
+                        choices=['bellman', 'reward_reg', 'reweight',
+                                 'chi2_weighted', 'reward_reg_reweight'],
+                        help='How to integrate SVO into IQ-Learn:\n'
+                             '  bellman            – shift Bellman target (inert under χ²)\n'
+                             '  reward_reg         – MSE on recovered reward vs R_SVO\n'
+                             '  reweight           – importance-weight expert sampling\n'
+                             '  chi2_weighted      – SVO-weighted χ² regularizer\n'
+                             '  reward_reg_reweight – reward_reg + reweight combined')
     parser.add_argument('--svo-alpha', type=float, default=0.0,
                         help='Target SVO angle in radians.')
     parser.add_argument('--svo-lambda', type=float, default=1.0,
