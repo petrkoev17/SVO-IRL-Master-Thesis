@@ -270,6 +270,7 @@ class IQLearnTrainer:
         self.svo_reweight_temp = svo_reweight_temp
         self.svo_cumulative = svo_cumulative
         self._expert_svo_weights: Optional[np.ndarray] = None
+        self._svo_global_std: Optional[float] = None
 
         if self.use_svo:
             if self.svo_mode not in self.VALID_SVO_MODES:
@@ -352,6 +353,31 @@ class IQLearnTrainer:
 
         if has_cumulative:
             print(f"[SVO-IQ] Demonstrations contain cumulative returns (G_self, G_global)")
+
+        # ----------------------------------------------------------
+        # Global SVO normalization (replaces per-batch normalization)
+        # Compute σ over entire expert buffer for deterministic scaling.
+        # We scale by σ only (no mean subtraction) to preserve
+        # the directional SVO bias.
+        # ----------------------------------------------------------
+        if self.use_svo and self.normalize_svo:
+            n = len(self.expert_buffer)
+            svo_vals = np.empty(n, dtype=np.float32)
+            for i, transition in enumerate(self.expert_buffer.buffer):
+                if self.svo_cumulative:
+                    svo_vals[i] = (self.cos_alpha * transition[7]
+                                   + self.sin_alpha * transition[8])
+                else:
+                    svo_vals[i] = (self.cos_alpha * transition[5]
+                                   + self.sin_alpha * transition[6])
+            self._svo_global_std = float(svo_vals.std()) + 1e-8
+            print(f"[SVO-IQ] Global SVO normalization:")
+            print(f"[SVO-IQ]   σ = {self._svo_global_std:.4f}")
+            print(f"[SVO-IQ]   raw range = [{svo_vals.min():.4f}, {svo_vals.max():.4f}]")
+            print(f"[SVO-IQ]   scaled range = "
+                  f"[{(svo_vals.min() / self._svo_global_std):.4f}, "
+                  f"{(svo_vals.max() / self._svo_global_std):.4f}]")
+
 
         if self.use_svo and self.svo_mode in ('reweight', 'reward_reg_reweight'):
             self._compute_expert_weights()
@@ -500,22 +526,22 @@ class IQLearnTrainer:
                 expert_r_selfs, expert_r_globals,
                 expert_G_selfs, expert_G_globals).to(self.device)
 
-            if self.normalize_svo:
-                mu  = r_svo_raw.mean()
-                std = r_svo_raw.std() + 1e-8
-                r_svo = (r_svo_raw - mu) / std
+            if self.normalize_svo and self._svo_global_std is not None:
+                r_svo = r_svo_raw / self._svo_global_std
             else:
                 r_svo = r_svo_raw
 
             svo_shift = self.svo_lambda * r_svo
 
+        # Save unshifted implicit reward for χ² regularization (Term 3).
+        # The χ² term bounds the LEARNED implicit reward r̂ = Q - γV(s')
+        # (Garg et al., 2021, Theorem 1). Contaminating it with the
+        # external SVO offset breaks this guarantee.
+        expert_reward_unshifted = expert_reward
+
         if self.use_svo and self.svo_mode == 'bellman':
-            # In bellman mode, the expert reward is shifted:
-            # r̂_svo = Q(s,a) − (γV(s') + λ·R_SVO)
-            # But since expert_reward = Q − γV(s'), we subtract svo_shift:
-            # Actually, the *target* is shifted UP, so the implicit reward goes DOWN.
-            # Original formulation: target = svo_shift + γV(s')
-            # So: r̂_bellman = Q(s,a) − svo_shift − γV(s') = expert_reward − svo_shift
+            # SVO Bellman shift enters Term 1 only (potential-based shaping,
+            # Ng, Harada & Russell, 1999 — preserves optimal-policy invariance).
             expert_reward = expert_reward - svo_shift
 
         # ------------------------------------------------------------------
@@ -580,7 +606,14 @@ class IQLearnTrainer:
         # This is the key stabilising term from the original paper.
         # ==================================================================
         if self.divergence == 'chi':
-            chi2_loss = 1.0 / (4.0 * self.div_alpha) * (expert_reward ** 2).mean()
+            # χ² regularization on UNSHIFTED implicit reward.
+            # 1/(4α) · E[r̂²] bounds the learned reward (Garg et al., 2021).
+            # The SVO shift is external data, not a learned quantity — including
+            # it here would penalize large R_SVO values, not large Q-values.
+            r_for_chi2 = (expert_reward_unshifted
+                          if self.use_svo and self.svo_mode == 'bellman'
+                          else expert_reward)
+            chi2_loss = 1.0 / (4.0 * self.div_alpha) * (r_for_chi2 ** 2).mean()
             loss = loss + chi2_loss
             loss_dict['chi2_loss'] = chi2_loss.item()
 
