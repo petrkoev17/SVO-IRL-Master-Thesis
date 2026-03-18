@@ -12,8 +12,11 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from wandb.integration.sb3 import WandbCallback
 
 
-from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
-from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
+# from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
+# from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
+
+from configs.env_config import ENV_CONFIG
+from src.envs.svo_proxy import SVOHighwayProximityWrapper as SVOPureWrapper
 
 def make_env(rank: int, svo_alpha: float, seed: int = 42):
     """
