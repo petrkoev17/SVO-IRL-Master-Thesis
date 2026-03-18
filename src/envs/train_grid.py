@@ -45,11 +45,11 @@ def main():
                         help='Batch-normalize R_SVO to zero mean / unit var.')
 
     # Training params
-    parser.add_argument('--updates', type=int, default=5000)
+    parser.add_argument('--updates', type=int, default=10000)
     parser.add_argument('--output-dir', type=str, default='./runs',
                         help='Directory to save the trained model')
     parser.add_argument('--batch-size', type=int, default=64)  # Smaller batch for gridworld
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--eval-freq', type=int, default=500)
     parser.add_argument('--seed', type=int, default=42)
 
@@ -63,6 +63,7 @@ def main():
     # 1. Initialize Environment
     env = SVOIntersectionEnv()
     state_dim = int(np.prod(env.observation_space.shape))
+    print(state_dim)
     action_dim = env.action_space.n
 
     # 2. Load Expert Demonstrations
@@ -78,7 +79,7 @@ def main():
         env=env,
         state_dim=state_dim,
         action_dim=action_dim,
-        hidden_dims=[256, 256],  # Smaller network for 5x5 gridworld
+        hidden_dims=[128, 128],
         lr=args.lr,
         device=device,
         use_svo=args.svo_regularize,
@@ -113,7 +114,7 @@ def main():
             trainer.save(ckpt_path)
 
     # Save the final model when training finishes
-    final_path = os.path.join(args.output_dir, "model_e15.pt")
+    final_path = os.path.join(args.output_dir, "prosocial.pt")
     trainer.save(final_path)
     print(f"\nTraining Complete! Final model saved to: {final_path}")
 

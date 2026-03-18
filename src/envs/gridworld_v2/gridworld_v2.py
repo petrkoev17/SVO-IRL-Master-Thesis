@@ -111,13 +111,17 @@ W_ARRIVED = 2.0         # Terminal arrival bonus (smaller — step costs must bi
 W_STEP = -0.3           # Per-step cost (accumulates: 25 steps × -0.3 = -7.5)
 
 # r_global components
-R_BASELINE = 0.0        # Per-step baseline when ego causes no disruption
+R_BASELINE = 0.0        # (unused, kept for reference)
 W_DELAY = -1.0          # Per speed-level of forced deceleration
 W_BLOCK = -1.5          # Other is completely stopped because of ego
 W_OTHER_COLLISION = -5.0  # Ego caused a neighbor crash
-W_FLOW = 1.5            # Bonus when ego clears the intersection (one-time)
-W_OTHER_ARRIVED = 1.0   # Bonus when an other vehicle arrives at its goal
-W_EGO_CLEAR = 1.0       # r_global bonus when ego arrives (frees road capacity)
+W_FLOW = 0.0            # (unused, kept for reference)
+W_OTHER_ARRIVED = 0.0   # (unused, kept for reference)
+W_EGO_CLEAR = 0.0       # (unused, kept for reference)
+W_YIELD = 0.2           # Positive reward when ego yields (stops/slows) while
+                         # others are approaching the conflict zone.
+                         # This is the key: r_global > 0 when ego sacrifices speed
+                         # to let others pass, r_global < 0 when ego disrupts.
 
 # IDM-like reaction zone: other vehicles start reacting when ego is within
 # this many cells of the conflict point AND on a collision course.
@@ -195,12 +199,6 @@ class SVOIntersectionGridV2(_GymEnv):
     def step(self, action):
         self.step_count += 1
 
-        # Store pre-step state
-        prev_ego_x = self.ego_x
-        prev_ego_speed = self.ego_speed
-        self._prev_other_speeds = [o[1] for o in self.others]
-        prev_others = [[o[0], o[1]] for o in self.others]
-
         # --- 1. Spawning (initial spawn for not-yet-spawned vehicles) ---
         for i, other in enumerate(self.others):
             if other[0] == NOT_SPAWNED:
@@ -218,6 +216,12 @@ class SVOIntersectionGridV2(_GymEnv):
                     elif self.np_random.random() < SPAWN_PROB:
                         other[0] = 0
                         other[1] = SPEED_FAST
+
+        # Store pre-step state AFTER spawning
+        prev_ego_x = self.ego_x
+        prev_ego_speed = self.ego_speed
+        self._prev_other_speeds = [o[1] for o in self.others]
+        prev_others = [[o[0], o[1]] for o in self.others]
 
         # --- 2. Compute other vehicles' IDM-like reactions ---
         self._update_others_reactive(action)
@@ -249,8 +253,8 @@ class SVOIntersectionGridV2(_GymEnv):
 
         # --- 8. Compute rewards ---
         r_self = self._compute_r_self(prev_ego_x)
-        r_global = self._compute_r_global(prev_others, collided_other_idx,
-                                           other_arrivals)
+        r_global = self._compute_r_global(prev_ego_x, prev_others,
+                                           collided_other_idx, other_arrivals)
 
         # --- 9. Termination ---
         terminated = self.ego_arrived or self.ego_crashed
@@ -445,21 +449,11 @@ class SVOIntersectionGridV2(_GymEnv):
 
         return r
 
-    def _compute_r_global(self, prev_others, collided_other_idx, other_arrivals):
+    def _compute_r_global(self, prev_ego_x, prev_others, collided_other_idx, other_arrivals):
         """
-        Social/global reward measuring ego's impact on others. Components:
-        - Baseline: positive when ego causes no disruption
-        - Delay cost: negative proportional to how much others decelerated
-        - Block cost: extra penalty when others are completely stopped by ego
-        - Collision cost: large negative if ego caused a neighbor crash
-        - Flow bonus: positive when ego clears the intersection
-        - Other arrival bonus: positive when another vehicle reaches its goal
-
-        Design principle: when ego drives carefully (moderate speed, good timing),
-        r_global stays near baseline. When ego is aggressive, others brake hard
-        (low r_global). When ego waits forever, r_global stays at baseline but
-        r_self drops. The sweet spot for prosocial agents is timing the crossing
-        to minimize disruption while still making progress.
+        Purely reaction-based r_global: 0 when ego causes no disruption,
+        negative when ego forces others to brake or causes collision.
+        Uses pre-move ego position for influence zone check.
         """
         # Collision with other vehicle
         if collided_other_idx >= 0:
@@ -467,39 +461,28 @@ class SVOIntersectionGridV2(_GymEnv):
 
         r = 0.0
 
-        # Social components only apply when ego is in the influence zone
-        ego_in_influence_zone = (CONFLICT_X - 1 <= self.ego_x <= CONFLICT_X)
+        # Count approaching others (using prev positions)
+        approaching = 0
+        for i in range(len(self.others)):
+            po = prev_others[i]
+            if po[0] != NOT_SPAWNED and 0 < (CONFLICT_Y - po[0]) <= REACTION_DISTANCE:
+                approaching += 1
 
-        if ego_in_influence_zone:
-            # Count active others from prev state
-            active_others = 0
-            for i in range(len(self.others)):
-                po = prev_others[i]
-                if po[0] != NOT_SPAWNED and po[0] < self.grid_size - 1:
-                    active_others += 1
+        # Yielding reward: only at x=2 (before conflict), not on it
+        if prev_ego_x == CONFLICT_X - 1 and approaching > 0:
+            if self.ego_speed == SPEED_STOP:
+                r += W_YIELD * approaching
+            elif self.ego_speed == SPEED_SLOW:
+                r += (W_YIELD * 0.5) * approaching
 
-            if active_others > 0:
-                r += R_BASELINE
-
-            # Other arrival bonuses
-            for i, arrived in enumerate(other_arrivals):
-                if arrived:
-                    r += W_OTHER_ARRIVED
-
-            # Disruption: check post-reaction speeds of active, non-arrived others
+        # Disruption penalty: ego on or crossing through conflict point
+        if prev_ego_x == CONFLICT_X or (prev_ego_x == CONFLICT_X - 1 and self.ego_x >= CONFLICT_X):
             for i in range(len(self.others)):
                 po = prev_others[i]
                 if po[0] == NOT_SPAWNED or po[0] >= self.grid_size - 1:
                     continue
                 if other_arrivals[i]:
                     continue
-
-                # Use the speed that was set during _update_others_reactive
-                # After reaction + move + respawn, we need the reaction speed
-                # which was stored in other[1] before _move_others changed position
-                # Since we can't easily get that, use a simpler approach:
-                # the prev_other_speeds were captured BEFORE reactions in step(),
-                # but we need post-reaction speed. Let's store it.
                 curr_speed = self._post_reaction_speeds[i]
                 speed_loss = SPEED_FAST - curr_speed
                 if speed_loss > 0:
@@ -507,15 +490,6 @@ class SVOIntersectionGridV2(_GymEnv):
                         r += W_BLOCK
                     else:
                         r += W_DELAY * (speed_loss / SPEED_FAST)
-
-        # Flow bonus: ego cleared the intersection, freeing capacity
-        if self.ego_cleared_intersection:
-            r += W_FLOW
-            self.ego_cleared_intersection = False  # One-time bonus
-
-        # Ego arrival bonus: ego leaving the road frees capacity for everyone
-        if self.ego_arrived:
-            r += W_EGO_CLEAR
 
         return r
 
@@ -691,26 +665,32 @@ class SVOValueIterationV2:
             if ego_arrived:
                 r_self += W_ARRIVED
 
-        # r_global
+        # r_global: counterfactual yielding reward
+        # x=2 (before conflict): yielding = positive, crossing into danger = negative
+        # x=3 (on conflict): ego is blocking = disruption penalty
+        # anywhere else: 0
         if collision:
             r_global = W_OTHER_COLLISION
         else:
             r_global = 0.0
-            ego_in_influence_zone = (CONFLICT_X - 1 <= ego_x <= CONFLICT_X)
 
-            if ego_in_influence_zone:
-                active_others = 0
-                for oy in [o1_y, o2_y]:
-                    if oy != NOT_SPAWNED and oy < self.grid_size - 1:
-                        active_others += 1
-                if active_others > 0:
-                    r_global += R_BASELINE
+            # Count approaching others
+            approaching = 0
+            for oy in [o1_y, o2_y]:
+                if oy != NOT_SPAWNED and 0 < (CONFLICT_Y - oy) <= REACTION_DISTANCE:
+                    approaching += 1
 
-                if o1_just_arrived:
-                    r_global += W_OTHER_ARRIVED
-                if o2_just_arrived:
-                    r_global += W_OTHER_ARRIVED
+            if ego_x == CONFLICT_X - 1 and approaching > 0:
+                # Ego is BEFORE conflict — this is the yielding decision point
+                if new_ego_speed == SPEED_STOP:
+                    r_global += W_YIELD * approaching
+                elif new_ego_speed == SPEED_SLOW:
+                    r_global += (W_YIELD * 0.5) * approaching
+                # If ego goes FAST from x=2, it'll land on/past x=3
+                # Disruption measured below if it lands on CONFLICT_X
 
+            if ego_x == CONFLICT_X or (ego_x == CONFLICT_X - 1 and next_ego_x >= CONFLICT_X):
+                # Ego is on or crossing through the conflict point
                 for oy, os in [(o1_y, new_o1_speed), (o2_y, new_o2_speed)]:
                     if oy == NOT_SPAWNED or oy >= self.grid_size - 1:
                         continue
@@ -720,11 +700,6 @@ class SVOValueIterationV2:
                             r_global += W_BLOCK
                         else:
                             r_global += W_DELAY * (speed_loss / SPEED_FAST)
-
-            if ego_crossed:
-                r_global += W_FLOW
-            if ego_arrived:
-                r_global += W_EGO_CLEAR
 
         done = ego_arrived or collision
 
@@ -1001,6 +976,8 @@ if __name__ == "__main__":
 
     os.makedirs('expert_demonstrations_v2', exist_ok=True)
 
+    TARGET_TRANSITIONS = 100
+
     for name, alpha in svo_profiles.items():
         print(f"\n{'=' * 40}")
         print(f"Solving for {name} (α = {np.rad2deg(alpha):.0f}°)")
@@ -1009,14 +986,39 @@ if __name__ == "__main__":
         solver = SVOValueIterationV2(gamma=0.99, svo_alpha=alpha)
         solver.solve()
 
-        # Generate demonstrations
-        trajectories = solver.extract_trajectories(num_trajectories=10)
+        # Generate enough trajectories to collect at least TARGET_TRANSITIONS
+        # Egoistic ~3 steps/traj, prosocial ~5, altruistic ~25
+        trajectories = solver.extract_trajectories(num_trajectories=50)
+
+        # Flatten all transitions, trim to TARGET_TRANSITIONS
+        all_transitions = []
+        for traj in trajectories:
+            all_transitions.extend(traj)
+        total_before = len(all_transitions)
+
+        # Repack into trajectories, cutting off at TARGET_TRANSITIONS
+        trimmed_trajectories = []
+        count = 0
+        for traj in trajectories:
+            if count >= TARGET_TRANSITIONS:
+                break
+            remaining = TARGET_TRANSITIONS - count
+            if len(traj) <= remaining:
+                trimmed_trajectories.append(traj)
+                count += len(traj)
+            else:
+                trimmed_trajectories.append(traj[:remaining])
+                count += remaining
+
+        total_after = sum(len(t) for t in trimmed_trajectories)
 
         # Save
         file_path = f'./expert_demonstrations_v2/expert_{name}.pkl'
         with open(file_path, 'wb') as f:
-            pickle.dump(trajectories, f)
-        print(f"Saved {len(trajectories)} {name} trajectories to {file_path}")
+            pickle.dump(trimmed_trajectories, f)
+        print(f"Saved {len(trimmed_trajectories)} {name} trajectories "
+              f"({total_after} transitions, trimmed from {total_before}) "
+              f"to {file_path}")
 
         # Print example trajectory
         print(f"\n--- Example {name.capitalize()} Trajectory ---")
