@@ -7,7 +7,7 @@ import torch
 from datetime import datetime
 
 # Import your custom environment and trainer
-from src.envs.gridworld import SVOIntersectionEnv
+from src.envs.gridworld_v2.gridworld_v2 import SVOIntersectionGridV2 as SVOIntersectionEnv
 from src.algorithms.iq_learner import IQLearnTrainer  # Ensure this points to the file containing your IQLearnTrainer class
 
 KNOWN_AGENTS = {
@@ -78,7 +78,7 @@ def main():
         env=env,
         state_dim=state_dim,
         action_dim=action_dim,
-        hidden_dims=[64, 64],  # Smaller network for 5x5 gridworld
+        hidden_dims=[256, 256],  # Smaller network for 5x5 gridworld
         lr=args.lr,
         device=device,
         use_svo=args.svo_regularize,
@@ -113,7 +113,7 @@ def main():
             trainer.save(ckpt_path)
 
     # Save the final model when training finishes
-    final_path = os.path.join(args.output_dir, "model_e11.pt")
+    final_path = os.path.join(args.output_dir, "model_e15.pt")
     trainer.save(final_path)
     print(f"\nTraining Complete! Final model saved to: {final_path}")
 
