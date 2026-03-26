@@ -26,7 +26,7 @@ import torch
 from scripts.extract_demonstrations import extract_from_multiple_agents, load_demonstrations
 from scripts.train_iq_learn import train_iq_learn
 # from src.envs.svo_pure_wrapper import SVOPureWrapper
-from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
+from src.envs.intersection_yielding_wrapper import SVOYieldingWrapper as SVOPureWrapper
 
 # ---------------------------------------------------------------------------
 # Known agents: name -> svo_alpha in radians

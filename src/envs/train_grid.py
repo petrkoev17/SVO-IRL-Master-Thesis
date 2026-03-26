@@ -7,8 +7,9 @@ import torch
 from datetime import datetime
 
 # Import your custom environment and trainer
-from src.envs.gridworld_v2.gridworld_v2 import SVOIntersectionGridV2 as SVOIntersectionEnv
-from src.algorithms.iq_learner import IQLearnTrainer  # Ensure this points to the file containing your IQLearnTrainer class
+# from src.envs.gridworld_v2.gridworld_v2 import SVOIntersectionGridV2 as SVOIntersectionEnv
+from src.envs.gridworld import SVOIntersectionEnv
+from src.algorithms.iq_learner import IQLearnTrainer
 
 KNOWN_AGENTS = {
     'egoistic': 0.0,
@@ -48,8 +49,8 @@ def main():
     parser.add_argument('--updates', type=int, default=10000)
     parser.add_argument('--output-dir', type=str, default='./runs',
                         help='Directory to save the trained model')
-    parser.add_argument('--batch-size', type=int, default=64)  # Smaller batch for gridworld
-    parser.add_argument('--lr', type=float, default=3e-4)
+    parser.add_argument('--batch-size', type=int, default=32)  # Smaller batch for gridworld
+    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--eval-freq', type=int, default=500)
     parser.add_argument('--seed', type=int, default=42)
 
@@ -79,7 +80,7 @@ def main():
         env=env,
         state_dim=state_dim,
         action_dim=action_dim,
-        hidden_dims=[128, 128],
+        hidden_dims=[64, 64],
         lr=args.lr,
         device=device,
         use_svo=args.svo_regularize,
@@ -114,7 +115,7 @@ def main():
             trainer.save(ckpt_path)
 
     # Save the final model when training finishes
-    final_path = os.path.join(args.output_dir, "prosocial.pt")
+    final_path = os.path.join(args.output_dir, "model75.pt")
     trainer.save(final_path)
     print(f"\nTraining Complete! Final model saved to: {final_path}")
 

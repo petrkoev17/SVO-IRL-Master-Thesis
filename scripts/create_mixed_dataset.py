@@ -49,7 +49,8 @@ from scripts.extract_demonstrations import (
 # from configs.env_config import ENV_CONFIG
 
 from configs.intersection_config_new import INTERSECTION_CONFIG as ENV_CONFIG
-from src.envs.svo_intersection_new import SVOIntersectionWrapper as SVOPureWrapper
+from src.envs.intersection_yielding_wrapper import SVOYieldingWrapper as SVOPureWrapper
+
 
 def create_env(svo_angle_deg: float, global_aggregation: str = 'mean'):
     """Create highway env with SVOPureWrapper at the given angle (degrees)."""
@@ -173,6 +174,12 @@ def main():
              '  min: Minimum neighbor reward — captures worst-affected vehicle.',
     )
 
+    parser.add_argument(
+        '--max-transitions-per-source', type=int, default=None,
+        help='Cap transitions per source for balanced datasets.\\n'
+             'E.g. --max-transitions-per-source 500 gives 1500 total for 3 sources.',
+    )
+
     args = parser.parse_args()
     np.random.seed(args.seed)
 
@@ -226,6 +233,56 @@ def main():
         output_path=args.output,
         weights=args.weights,
     )
+
+    # ── Balance transitions per source ──
+    if args.max_transitions_per_source:
+        cap = args.max_transitions_per_source
+        print(f"\\nBalancing to max {cap} transitions per source...")
+
+        # Re-load each source individually and truncate
+        balanced_trajs = []
+        for pkl_path in pkl_paths:
+            trajs, _, _ = load_demonstrations(pkl_path)
+            count = 0
+            for traj in trajs:
+                if count >= cap:
+                    break
+                remaining = cap - count
+                if len(traj) <= remaining:
+                    balanced_trajs.append(traj)
+                    count += len(traj)
+                else:
+                    balanced_trajs.append(traj[:remaining])
+                    count += remaining
+            print(f"  {pkl_path}: {count} transitions")
+
+        # Re-save with balanced data
+        combined_stats = compute_stats_from_trajectories(balanced_trajs)
+        metadata = {
+            'source_paths': pkl_paths,
+            'weights': args.weights or [1.0 / len(pkl_paths)] * len(pkl_paths),
+            'mode_labels': [],  # Will be filled below
+        }
+
+        # Assign mode labels from source paths
+        for pkl_path in pkl_paths:
+            trajs_source, _, _ = load_demonstrations(pkl_path)
+            count = 0
+            for traj in trajs_source:
+                if count >= cap:
+                    break
+                remaining = cap - count
+                t_len = min(len(traj), remaining)
+                count += t_len
+            # Extract mode name from path
+            import re
+            name_match = re.search(r'svo(\d+)deg', pkl_path)
+            mode_name = f"svo_{name_match.group(1)}" if name_match else pkl_path
+            metadata['mode_labels'].extend([mode_name] * count)
+
+        save_demonstrations(balanced_trajs, combined_stats, args.output, metadata)
+        combined_trajs = balanced_trajs
+        print(f"  Total: {sum(len(t) for t in balanced_trajs)} transitions")
 
     print(f"\n{'='*60}")
     print("Mixed Dataset Created")

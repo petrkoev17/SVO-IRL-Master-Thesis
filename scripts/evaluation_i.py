@@ -23,7 +23,7 @@ from rich.console import Console
 from rich.table import Table
 
 from configs.intersection_config_new import INTERSECTION_CONFIG
-from src.envs.svo_intersection_new import SVOIntersectionWrapper
+from src.envs.intersection_yielding_wrapper import SVOYieldingWrapper as SVOIntersectionWrapper
 from src.algorithms.iq_learner import IQLearnTrainer
 
 
